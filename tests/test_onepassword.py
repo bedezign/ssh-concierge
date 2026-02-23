@@ -464,6 +464,49 @@ class TestParseItemToHostConfigs:
         hosts = parse_item_to_host_configs(item)
         assert hosts[0].user == "admin"
 
+    def test_known_fields_case_insensitive(self):
+        """Field names like 'User', 'PORT' are recognized as known fields."""
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SSH_KEY",
+            "fields": [
+                {"id": "pk", "label": "public key", "value": "ssh-ed25519 AAAA"},
+                {"id": "fp", "label": "fingerprint", "value": "SHA256:x"},
+                {
+                    "id": "f1",
+                    "label": "Aliases",
+                    "value": "myserver",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "User",
+                    "value": "deploy",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f3",
+                    "label": "PORT",
+                    "value": "2222",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f4",
+                    "label": "HostName",
+                    "value": "10.0.0.1",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+        assert hosts[0].aliases == ["myserver"]
+        assert hosts[0].user == "deploy"
+        assert hosts[0].port == "2222"
+        assert hosts[0].hostname == "10.0.0.1"
+        assert hosts[0].extra_directives == {}
+
     def test_empty_aliases_skipped(self):
         item = {
             "id": "x",
@@ -658,17 +701,18 @@ class TestDirectiveValidation:
         assert "Test Host" in err
 
     def test_case_insensitive_valid(self):
-        """Lowercase 'proxyjump' should be accepted (SSH keywords are case-insensitive)."""
+        """Lowercase 'proxyjump' is accepted and normalized to canonical 'ProxyJump'."""
         item = self._make_item([{"label": "proxyjump", "value": "bastion"}])
         hosts = parse_item_to_host_configs(item)
         assert len(hosts) == 1
-        assert hosts[0].extra_directives == {"proxyjump": "bastion"}
+        assert hosts[0].extra_directives == {"ProxyJump": "bastion"}
 
     def test_case_insensitive_mixed_case(self):
-        """'PROXYJUMP' should also be accepted."""
+        """'PROXYJUMP' is accepted and normalized to canonical 'ProxyJump'."""
         item = self._make_item([{"label": "PROXYJUMP", "value": "bastion"}])
         hosts = parse_item_to_host_configs(item)
         assert len(hosts) == 1
+        assert hosts[0].extra_directives == {"ProxyJump": "bastion"}
 
     def test_mixed_valid_and_invalid_skips_host(self, capsys):
         """One invalid directive among valid ones causes the entire host to be skipped."""

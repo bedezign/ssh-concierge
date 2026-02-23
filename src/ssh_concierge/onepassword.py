@@ -15,106 +15,107 @@ from ssh_concierge.models import HostConfig
 _KNOWN_FIELDS = {'aliases', 'alias', 'hostname', 'host', 'port', 'user', 'username', 'password'}
 
 # Valid SSH client config keywords (from man ssh_config, OpenSSH 8.x-9.x).
-# Lowercase for case-insensitive comparison. Excludes keywords we generate
-# ourselves: Host, Match, Include, HostName, Port, User, IdentityFile, IdentitiesOnly.
-_VALID_SSH_DIRECTIVES = {
-    'addkeystoagent',
-    'addressfamily',
-    'batchmode',
-    'bindaddress',
-    'bindinterface',
-    'canonicaldomains',
-    'canonicalizefallbacklocal',
-    'canonicalizehostname',
-    'canonicalizemaxdots',
-    'canonicalizepermittedcnames',
-    'casignaturealgorithms',
-    'certificatefile',
-    'channeltimeout',
-    'checkhostip',
-    'ciphers',
-    'clearallforwardings',
-    'compression',
-    'connectionattempts',
-    'connecttimeout',
-    'controlmaster',
-    'controlpath',
-    'controlpersist',
-    'dynamicforward',
-    'enableescapecommandline',
-    'enablesshkeysign',
-    'escapechar',
-    'exitonforwardfailure',
-    'fingerprinthash',
-    'forkafterauthentication',
-    'forwardagent',
-    'forwardx11',
-    'forwardx11timeout',
-    'forwardx11trusted',
-    'gatewayports',
-    'globalknownhostsfile',
-    'gssapiauthentication',
-    'gssapidelegatecredentials',
-    'gssapikeyexchange',
-    'gssapirenewalforcerekey',
-    'gssapiserveridentity',
-    'gssapitrustdns',
-    'hashknownhosts',
-    'hostbasedacceptedalgorithms',
-    'hostbasedauthentication',
-    'hostkeyalgorithms',
-    'hostkeyalias',
-    'identityagent',
-    'ignoreunknown',
-    'ipqos',
-    'kbdinteractiveauthentication',
-    'kbdinteractivedevices',
-    'kexalgorithms',
-    'knownhostscommand',
-    'localcommand',
-    'localforward',
-    'loglevel',
-    'logverbose',
-    'macs',
-    'nohostauthenticationforlocalhost',
-    'numberofpasswordprompts',
-    'obfuscatekeystrokes',
-    'passwordauthentication',
-    'permitlocalcommand',
-    'permitremoteopen',
-    'pkcs11provider',
-    'preferredauthentications',
-    'proxycommand',
-    'proxyjump',
-    'proxyusefdpass',
-    'pubkeyacceptedalgorithms',
-    'pubkeyauthentication',
-    'rekeylimit',
-    'remotecommand',
-    'remoteforward',
-    'requesttty',
-    'requiredrsasize',
-    'revokedhostkeys',
-    'securitykeyprovider',
-    'sendenv',
-    'serveralivecountmax',
-    'serveraliveinterval',
-    'sessiontype',
-    'setenv',
-    'streamlocalbindmask',
-    'streamlocalbindunlink',
-    'stricthostkeychecking',
-    'syslogfacility',
-    'tcpkeepalive',
-    'tunnel',
-    'tunneldevice',
-    'updatehostkeys',
-    'usekeychain',
-    'userknownhostsfile',
-    'verifyhostkeydns',
-    'visualhostkey',
-    'xauthlocation',
-}
+# Maps lowercase → canonical casing. User input is normalized to the canonical form.
+# Excludes keywords we generate ourselves: Host, Match, Include, HostName, Port,
+# User, IdentityFile, IdentitiesOnly.
+_VALID_SSH_DIRECTIVES: dict[str, str] = {k.lower(): k for k in (
+    'AddKeysToAgent',
+    'AddressFamily',
+    'BatchMode',
+    'BindAddress',
+    'BindInterface',
+    'CanonicalDomains',
+    'CanonicalizeFallbackLocal',
+    'CanonicalizeHostname',
+    'CanonicalizeMaxDots',
+    'CanonicalizePermittedCNAMEs',
+    'CASignatureAlgorithms',
+    'CertificateFile',
+    'ChannelTimeout',
+    'CheckHostIP',
+    'Ciphers',
+    'ClearAllForwardings',
+    'Compression',
+    'ConnectionAttempts',
+    'ConnectTimeout',
+    'ControlMaster',
+    'ControlPath',
+    'ControlPersist',
+    'DynamicForward',
+    'EnableEscapeCommandline',
+    'EnableSSHKeysign',
+    'EscapeChar',
+    'ExitOnForwardFailure',
+    'FingerprintHash',
+    'ForkAfterAuthentication',
+    'ForwardAgent',
+    'ForwardX11',
+    'ForwardX11Timeout',
+    'ForwardX11Trusted',
+    'GatewayPorts',
+    'GlobalKnownHostsFile',
+    'GSSAPIAuthentication',
+    'GSSAPIDelegateCredentials',
+    'GSSAPIKeyExchange',
+    'GSSAPIRenewalForcesRekey',
+    'GSSAPIServerIdentity',
+    'GSSAPITrustDns',
+    'HashKnownHosts',
+    'HostbasedAcceptedAlgorithms',
+    'HostbasedAuthentication',
+    'HostKeyAlgorithms',
+    'HostKeyAlias',
+    'IdentityAgent',
+    'IgnoreUnknown',
+    'IPQoS',
+    'KbdInteractiveAuthentication',
+    'KbdInteractiveDevices',
+    'KexAlgorithms',
+    'KnownHostsCommand',
+    'LocalCommand',
+    'LocalForward',
+    'LogLevel',
+    'LogVerbose',
+    'MACs',
+    'NoHostAuthenticationForLocalhost',
+    'NumberOfPasswordPrompts',
+    'ObfuscateKeystrokes',
+    'PasswordAuthentication',
+    'PermitLocalCommand',
+    'PermitRemoteOpen',
+    'PKCS11Provider',
+    'PreferredAuthentications',
+    'ProxyCommand',
+    'ProxyJump',
+    'ProxyUseFdpass',
+    'PubkeyAcceptedAlgorithms',
+    'PubkeyAuthentication',
+    'RekeyLimit',
+    'RemoteCommand',
+    'RemoteForward',
+    'RequestTTY',
+    'RequiredRSASize',
+    'RevokedHostKeys',
+    'SecurityKeyProvider',
+    'SendEnv',
+    'ServerAliveCountMax',
+    'ServerAliveInterval',
+    'SessionType',
+    'SetEnv',
+    'StreamLocalBindMask',
+    'StreamLocalBindUnlink',
+    'StrictHostKeyChecking',
+    'SyslogFacility',
+    'TCPKeepAlive',
+    'Tunnel',
+    'TunnelDevice',
+    'UpdateHostKeys',
+    'UseKeychain',
+    'UserKnownHostsFile',
+    'VerifyHostKeyDNS',
+    'VisualHostKey',
+    'XAuthLocation',
+)}
 
 SSH_CONFIG_SECTION_PREFIX = 'SSH Config'
 SSH_HOST_TAG = 'SSH Host'
@@ -194,8 +195,11 @@ def parse_item_to_host_configs(item: dict[str, Any]) -> list[HostConfig]:
         elif field.get('label') == 'fingerprint':
             fingerprint = field.get('value')
 
-    # Group fields by section (only SSH Config* sections)
-    sections: dict[str, dict[str, str]] = defaultdict(dict)
+    # Group fields by section (only SSH Config* sections).
+    # Each section maps lowercase field name → (original_label, value)
+    # so known-field lookups are case-insensitive while extra directives
+    # preserve the user's original casing.
+    sections: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
     for field in fields:
         section = field.get('section')
         if not section:
@@ -205,38 +209,51 @@ def parse_item_to_host_configs(item: dict[str, Any]) -> list[HostConfig]:
             continue
         value = field.get('value', '')
         if value:
-            sections[label][field['label']] = value
+            original_label = field['label']
+            sections[label][original_label.lower()] = (original_label, value)
 
     # Build a HostConfig per section
     hosts = []
     for section_label, ssh_fields in sections.items():
-        aliases = _parse_aliases(ssh_fields.get('aliases') or ssh_fields.get('alias', ''))
+        aliases_val = (
+            ssh_fields.get('aliases', (None, ''))[1]
+            or ssh_fields.get('alias', (None, ''))[1]
+        )
+        aliases = _parse_aliases(aliases_val)
         if not aliases:
             continue
 
-        extra = {k: v for k, v in ssh_fields.items() if k not in _KNOWN_FIELDS}
+        extra_raw = {k: v for k, (_orig, v) in ssh_fields.items() if k not in _KNOWN_FIELDS}
 
-        invalid = [k for k in extra if k.lower() not in _VALID_SSH_DIRECTIVES]
+        invalid = [k for k in extra_raw if k not in _VALID_SSH_DIRECTIVES]
         if invalid:
             title = item.get('title', item.get('id', '?'))
-            for name in invalid:
+            for key in invalid:
+                orig = ssh_fields[key][0]
                 print(
                     f'ssh-concierge: skipping "{title}" [{section_label}]: '
-                    f'unknown SSH directive "{name}"',
+                    f'unknown SSH directive "{orig}"',
                     file=sys.stderr,
                 )
             continue
 
+        # Normalize to canonical SSH config casing
+        extra = {_VALID_SSH_DIRECTIVES[k]: v for k, v in extra_raw.items()}
+
+        def _val(key: str) -> str | None:
+            entry = ssh_fields.get(key)
+            return entry[1] if entry else None
+
         hosts.append(HostConfig(
             aliases=aliases,
-            hostname=ssh_fields.get('hostname') or ssh_fields.get('host') or None,
-            port=ssh_fields.get('port') or None,
-            user=ssh_fields.get('user') or ssh_fields.get('username') or None,
+            hostname=_val('hostname') or _val('host'),
+            port=_val('port'),
+            user=_val('user') or _val('username'),
             public_key=public_key,
             fingerprint=fingerprint,
             extra_directives=extra,
             section_label=section_label,
-            password=ssh_fields.get('password') or None,
+            password=_val('password'),
         ))
 
     return hosts
