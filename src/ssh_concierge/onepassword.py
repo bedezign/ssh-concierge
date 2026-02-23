@@ -109,6 +109,7 @@ _VALID_SSH_DIRECTIVES = {
     'tunnel',
     'tunneldevice',
     'updatehostkeys',
+    'usekeychain',
     'userknownhostsfile',
     'verifyhostkeydns',
     'visualhostkey',
