@@ -27,6 +27,7 @@ uv tool install --editable /path/to/ssh-concierge
 
 # Symlink the zsh entry point (the hot-path wrapper that SSH calls)
 ln -s /path/to/ssh-concierge/src/ssh-concierge ~/.local/bin/ssh-concierge
+chmod +x /path/to/ssh-concierge/src/ssh-concierge
 
 # Optional: SSH/SCP wrapper for transparent password injection
 ln -s $(which ssh-concierge-wrap) ~/.local/bin/ssh

@@ -17,7 +17,7 @@ Reads SSH host configurations from custom fields on 1Password items and generate
 ```
 ~/.ssh/config:
   Match host * exec "ssh-concierge %h"   ← checks if config is fresh (zsh, <1ms)
-    Include .../ssh-concierge/hosts.conf  ← pre-generated from 1Password
+    Include <XDG_RUNTIME_DIR>/ssh-concierge/hosts.conf  ← pre-generated from 1Password
   Include ~/.ssh/static/config            ← existing configs still work
 ```
 
@@ -73,6 +73,7 @@ uv tool install --editable /path/to/ssh-concierge
 
 # Symlink the zsh entry point (the hot-path wrapper that SSH calls)
 ln -s /path/to/ssh-concierge/src/ssh-concierge ~/.local/bin/ssh-concierge
+chmod +x /path/to/ssh-concierge/src/ssh-concierge
 
 # Optional: SSH/SCP wrapper for transparent password injection
 ln -s $(which ssh-concierge-wrap) ~/.local/bin/ssh
