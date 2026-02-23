@@ -1,0 +1,52 @@
+[project]
+name = "ssh-concierge"
+version = "0.1.0"
+description = "Dynamic SSH configuration provider backed by 1Password"
+requires-python = ">=3.11"
+dependencies = []
+license = { text = "MIT" }
+authors = [{ name = "Steve Guns" }]
+readme = "README.md"
+keywords = ["ssh", "scp", "1password", "config", "password"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+    "Topic :: System :: Networking",
+    "Environment :: Console",
+]
+
+[project.urls]
+Homepage = "https://github.com/bedezign/ssh-concierge"
+Repository = "https://github.com/bedezign/ssh-concierge"
+Issues = "https://github.com/bedezign/ssh-concierge/issues"
+
+[project.scripts]
+ssh-concierge-py = "ssh_concierge.cli:main"
+ssh-concierge-wrap = "ssh_concierge.wrap:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+pythonPlatform = "Linux"
+venvPath = "."
+venv = ".venv"

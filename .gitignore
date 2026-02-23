@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+dist/
+build/
+.coverage
+.idea/
+.claude/
+CLAUDE.md
+uv.lock

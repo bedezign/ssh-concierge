@@ -1,0 +1,34 @@
+#!/usr/bin/env zsh
+# ssh-concierge: Match exec entry point
+#
+# Called by: Match host * exec "ssh-concierge %h"
+# Always exits 0 — never blocks SSH connections.
+#
+# Hot path: stat the config file, check age < TTL → exit 0 (sub-millisecond)
+# Cold path: invoke Python to regenerate from 1Password
+
+readonly RUNTIME_DIR="${XDG_RUNTIME_DIR}/ssh-concierge"
+readonly CONFIG="${RUNTIME_DIR}/hosts.conf"
+readonly TTL=3600  # 1 hour
+
+# --generate / --flush / --list / --status: delegate to Python immediately
+case "$1" in
+    --generate|--flush|--list|--status|--deploy-key|--help|-h)
+        ssh-concierge-py "$@"
+        exit $?
+        ;;
+esac
+
+# Hot path: config exists and is fresh
+if [[ -f "$CONFIG" ]]; then
+    local age=$(( $(date +%s) - $(stat -c %Y "$CONFIG") ))
+    if (( age < TTL )); then
+        exit 0
+    fi
+fi
+
+# Cold path: regenerate (Python handles all 1Password interaction)
+ssh-concierge-py --generate --quiet 2>/dev/null
+
+# Always succeed — never block SSH connections
+exit 0
