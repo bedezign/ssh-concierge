@@ -300,6 +300,170 @@ class TestParseItemToHostConfigs:
         hosts = parse_item_to_host_configs(SAMPLE_ITEM_SINGLE_SECTION)
         assert hosts[0].aliases == ["prod", "prod-web-01", "production.example.com"]
 
+    def test_alias_singular_fallback(self):
+        """'alias' (singular) field is accepted as fallback for 'aliases'."""
+        item = {
+            "id": "x",
+            "title": "Plex",
+            "category": "LOGIN",
+            "tags": ["SSH Host"],
+            "fields": [
+                {
+                    "id": "f1",
+                    "label": "alias",
+                    "value": "plex",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "hostname",
+                    "value": "mediabox.local",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+        assert hosts[0].aliases == ["plex"]
+        assert hosts[0].hostname == "mediabox.local"
+
+    def test_aliases_plural_takes_precedence_over_singular(self):
+        """When both 'aliases' and 'alias' exist, 'aliases' wins."""
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SSH_KEY",
+            "fields": [
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "server1, server2",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "alias",
+                    "value": "server-old",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+        assert hosts[0].aliases == ["server1", "server2"]
+
+    def test_host_fallback_for_hostname(self):
+        """'host' field is accepted as fallback for 'hostname'."""
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SSH_KEY",
+            "fields": [
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "myserver",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "host",
+                    "value": "192.168.1.100",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+        assert hosts[0].hostname == "192.168.1.100"
+        assert hosts[0].extra_directives == {}
+
+    def test_hostname_takes_precedence_over_host(self):
+        """When both 'hostname' and 'host' exist, 'hostname' wins."""
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SSH_KEY",
+            "fields": [
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "myserver",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "hostname",
+                    "value": "10.0.0.1",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f3",
+                    "label": "host",
+                    "value": "10.0.0.99",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert hosts[0].hostname == "10.0.0.1"
+
+    def test_username_fallback_for_user(self):
+        """'username' field is accepted as fallback for 'user'."""
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SSH_KEY",
+            "fields": [
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "myserver",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "username",
+                    "value": "deploy",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+        assert hosts[0].user == "deploy"
+        assert hosts[0].extra_directives == {}
+
+    def test_user_takes_precedence_over_username(self):
+        """When both 'user' and 'username' exist, 'user' wins."""
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SSH_KEY",
+            "fields": [
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "myserver",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "user",
+                    "value": "admin",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f3",
+                    "label": "username",
+                    "value": "old-user",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert hosts[0].user == "admin"
+
     def test_empty_aliases_skipped(self):
         item = {
             "id": "x",
@@ -436,3 +600,132 @@ class TestParseItemToHostConfigs:
         }
         hosts = parse_item_to_host_configs(item)
         assert hosts[0].aliases == ["node1", "node2", "node3"]
+
+
+class TestDirectiveValidation:
+    """Tests for SSH directive validation in extra_directives."""
+
+    def _make_item(self, extra_fields: list[dict]) -> dict:
+        """Build an item with SSH Config section containing given extra fields."""
+        fields = [
+            {"id": "pk", "label": "public key", "value": "ssh-ed25519 AAAA"},
+            {"id": "fp", "label": "fingerprint", "value": "SHA256:x"},
+            {
+                "id": "f1",
+                "label": "aliases",
+                "value": "myhost",
+                "section": {"id": "s", "label": "SSH Config"},
+            },
+        ]
+        for i, ef in enumerate(extra_fields):
+            fields.append({
+                "id": f"extra{i}",
+                "label": ef["label"],
+                "value": ef["value"],
+                "section": {"id": "s", "label": "SSH Config"},
+            })
+        return {
+            "id": "test-item",
+            "title": "Test Host",
+            "category": "SSH_KEY",
+            "fields": fields,
+        }
+
+    def test_valid_directive_passes(self):
+        item = self._make_item([{"label": "ProxyJump", "value": "bastion"}])
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+        assert hosts[0].extra_directives == {"ProxyJump": "bastion"}
+
+    def test_multiple_valid_directives(self):
+        item = self._make_item([
+            {"label": "ProxyJump", "value": "bastion"},
+            {"label": "ForwardAgent", "value": "yes"},
+        ])
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+        assert hosts[0].extra_directives == {
+            "ProxyJump": "bastion",
+            "ForwardAgent": "yes",
+        }
+
+    def test_invalid_directive_skips_host(self, capsys):
+        item = self._make_item([{"label": "foobar", "value": "baz"}])
+        hosts = parse_item_to_host_configs(item)
+        assert hosts == []
+        err = capsys.readouterr().err
+        assert 'unknown SSH directive "foobar"' in err
+        assert "Test Host" in err
+
+    def test_case_insensitive_valid(self):
+        """Lowercase 'proxyjump' should be accepted (SSH keywords are case-insensitive)."""
+        item = self._make_item([{"label": "proxyjump", "value": "bastion"}])
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+        assert hosts[0].extra_directives == {"proxyjump": "bastion"}
+
+    def test_case_insensitive_mixed_case(self):
+        """'PROXYJUMP' should also be accepted."""
+        item = self._make_item([{"label": "PROXYJUMP", "value": "bastion"}])
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+
+    def test_mixed_valid_and_invalid_skips_host(self, capsys):
+        """One invalid directive among valid ones causes the entire host to be skipped."""
+        item = self._make_item([
+            {"label": "ProxyJump", "value": "bastion"},
+            {"label": "NotARealDirective", "value": "oops"},
+        ])
+        hosts = parse_item_to_host_configs(item)
+        assert hosts == []
+        err = capsys.readouterr().err
+        assert 'unknown SSH directive "NotARealDirective"' in err
+
+    def test_warning_includes_section_label(self, capsys):
+        """Warning message includes the section label for multi-section items."""
+        item = {
+            "id": "x",
+            "title": "Multi Host",
+            "category": "SSH_KEY",
+            "fields": [
+                {"id": "pk", "label": "public key", "value": "ssh-ed25519 AAAA"},
+                {"id": "fp", "label": "fingerprint", "value": "SHA256:x"},
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "good-host",
+                    "section": {"id": "s1", "label": "SSH Config: prod"},
+                },
+                {
+                    "id": "f2",
+                    "label": "ProxyJump",
+                    "value": "bastion",
+                    "section": {"id": "s1", "label": "SSH Config: prod"},
+                },
+                {
+                    "id": "f3",
+                    "label": "aliases",
+                    "value": "bad-host",
+                    "section": {"id": "s2", "label": "SSH Config: staging"},
+                },
+                {
+                    "id": "f4",
+                    "label": "typofield",
+                    "value": "oops",
+                    "section": {"id": "s2", "label": "SSH Config: staging"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        # Good section passes, bad section skipped
+        assert len(hosts) == 1
+        assert hosts[0].aliases == ["good-host"]
+        err = capsys.readouterr().err
+        assert "SSH Config: staging" in err
+        assert 'typofield' in err
+
+    def test_existing_proxyjump_still_works(self):
+        """Regression: the existing SAMPLE_ITEM_SINGLE_SECTION with ProxyJump still parses."""
+        hosts = parse_item_to_host_configs(SAMPLE_ITEM_SINGLE_SECTION)
+        assert len(hosts) == 1
+        assert hosts[0].extra_directives == {"ProxyJump": "bastion"}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from collections import defaultdict
 from typing import Any
 
@@ -11,7 +12,108 @@ from ssh_concierge.expand import expand_braces
 from ssh_concierge.models import HostConfig
 
 # Fields from the "SSH Config" section that map to HostConfig attributes directly
-_KNOWN_FIELDS = {'aliases', 'hostname', 'port', 'user', 'password'}
+_KNOWN_FIELDS = {'aliases', 'alias', 'hostname', 'host', 'port', 'user', 'username', 'password'}
+
+# Valid SSH client config keywords (from man ssh_config, OpenSSH 8.x-9.x).
+# Lowercase for case-insensitive comparison. Excludes keywords we generate
+# ourselves: Host, Match, Include, HostName, Port, User, IdentityFile, IdentitiesOnly.
+_VALID_SSH_DIRECTIVES = {
+    'addkeystoagent',
+    'addressfamily',
+    'batchmode',
+    'bindaddress',
+    'bindinterface',
+    'canonicaldomains',
+    'canonicalizefallbacklocal',
+    'canonicalizehostname',
+    'canonicalizemaxdots',
+    'canonicalizepermittedcnames',
+    'casignaturealgorithms',
+    'certificatefile',
+    'channeltimeout',
+    'checkhostip',
+    'ciphers',
+    'clearallforwardings',
+    'compression',
+    'connectionattempts',
+    'connecttimeout',
+    'controlmaster',
+    'controlpath',
+    'controlpersist',
+    'dynamicforward',
+    'enableescapecommandline',
+    'enablesshkeysign',
+    'escapechar',
+    'exitonforwardfailure',
+    'fingerprinthash',
+    'forkafterauthentication',
+    'forwardagent',
+    'forwardx11',
+    'forwardx11timeout',
+    'forwardx11trusted',
+    'gatewayports',
+    'globalknownhostsfile',
+    'gssapiauthentication',
+    'gssapidelegatecredentials',
+    'gssapikeyexchange',
+    'gssapirenewalforcerekey',
+    'gssapiserveridentity',
+    'gssapitrustdns',
+    'hashknownhosts',
+    'hostbasedacceptedalgorithms',
+    'hostbasedauthentication',
+    'hostkeyalgorithms',
+    'hostkeyalias',
+    'identityagent',
+    'ignoreunknown',
+    'ipqos',
+    'kbdinteractiveauthentication',
+    'kbdinteractivedevices',
+    'kexalgorithms',
+    'knownhostscommand',
+    'localcommand',
+    'localforward',
+    'loglevel',
+    'logverbose',
+    'macs',
+    'nohostauthenticationforlocalhost',
+    'numberofpasswordprompts',
+    'obfuscatekeystrokes',
+    'passwordauthentication',
+    'permitlocalcommand',
+    'permitremoteopen',
+    'pkcs11provider',
+    'preferredauthentications',
+    'proxycommand',
+    'proxyjump',
+    'proxyusefdpass',
+    'pubkeyacceptedalgorithms',
+    'pubkeyauthentication',
+    'rekeylimit',
+    'remotecommand',
+    'remoteforward',
+    'requesttty',
+    'requiredrsasize',
+    'revokedhostkeys',
+    'securitykeyprovider',
+    'sendenv',
+    'serveralivecountmax',
+    'serveraliveinterval',
+    'sessiontype',
+    'setenv',
+    'streamlocalbindmask',
+    'streamlocalbindunlink',
+    'stricthostkeychecking',
+    'syslogfacility',
+    'tcpkeepalive',
+    'tunnel',
+    'tunneldevice',
+    'updatehostkeys',
+    'userknownhostsfile',
+    'verifyhostkeydns',
+    'visualhostkey',
+    'xauthlocation',
+}
 
 SSH_CONFIG_SECTION_PREFIX = 'SSH Config'
 SSH_HOST_TAG = 'SSH Host'
@@ -107,17 +209,28 @@ def parse_item_to_host_configs(item: dict[str, Any]) -> list[HostConfig]:
     # Build a HostConfig per section
     hosts = []
     for section_label, ssh_fields in sections.items():
-        aliases = _parse_aliases(ssh_fields.get('aliases', ''))
+        aliases = _parse_aliases(ssh_fields.get('aliases') or ssh_fields.get('alias', ''))
         if not aliases:
             continue
 
         extra = {k: v for k, v in ssh_fields.items() if k not in _KNOWN_FIELDS}
 
+        invalid = [k for k in extra if k.lower() not in _VALID_SSH_DIRECTIVES]
+        if invalid:
+            title = item.get('title', item.get('id', '?'))
+            for name in invalid:
+                print(
+                    f'ssh-concierge: skipping "{title}" [{section_label}]: '
+                    f'unknown SSH directive "{name}"',
+                    file=sys.stderr,
+                )
+            continue
+
         hosts.append(HostConfig(
             aliases=aliases,
-            hostname=ssh_fields.get('hostname') or None,
+            hostname=ssh_fields.get('hostname') or ssh_fields.get('host') or None,
             port=ssh_fields.get('port') or None,
-            user=ssh_fields.get('user') or None,
+            user=ssh_fields.get('user') or ssh_fields.get('username') or None,
             public_key=public_key,
             fingerprint=fingerprint,
             extra_directives=extra,

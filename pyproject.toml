@@ -50,3 +50,8 @@ pythonVersion = "3.11"
 pythonPlatform = "Linux"
 venvPath = "."
 venv = ".venv"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
