@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ssh_concierge.wrap import (
+    _resolve_fields,
     _run_with_askpass,
     copy_to_clipboard,
     find_real_binary,
@@ -97,14 +98,25 @@ class TestLookupHostdata:
 
 
 class TestLookupReference:
-    """Compat wrapper tests."""
+    """Compat wrapper tests — supports both legacy refs and new fields format."""
 
-    def test_found(self, tmp_path: Path):
+    def test_found_legacy(self, tmp_path: Path):
         hd_file = tmp_path / 'hostdata.json'
         hd_file.write_text(json.dumps({
             'myhost': {'refs': {'password': 'op://vault/item/password'}},
         }))
         assert lookup_reference('myhost', hd_file) == 'op://vault/item/password'
+
+    def test_found_new_format(self, tmp_path: Path):
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://vault/item/password', 'resolved': None, 'sensitive': True},
+                },
+            },
+        }))
+        assert lookup_reference('myhost', hd_file) == 'ops://vault/item/password'
 
     def test_not_found(self, tmp_path: Path):
         hd_file = tmp_path / 'hostdata.json'
@@ -117,6 +129,74 @@ class TestLookupReference:
             'myhost': {'clipboard': 'hello'},
         }))
         assert lookup_reference('myhost', hd_file) is None
+
+
+class TestResolveFields:
+    def test_cached_non_sensitive(self):
+        entry = {
+            'fields': {
+                'hostname': {'original': 'op://V/I/hostname', 'resolved': '10.0.0.1', 'sensitive': False},
+                'user': {'original': 'deploy', 'resolved': 'deploy', 'sensitive': False},
+            },
+        }
+        result = _resolve_fields(entry)
+        assert result == {'hostname': '10.0.0.1', 'user': 'deploy'}
+
+    @patch('ssh_concierge.field.resolve_single')
+    def test_sensitive_resolved_at_ssh_time(self, mock_resolve):
+        mock_resolve.return_value = 'secret123'
+        entry = {
+            'fields': {
+                'password': {'original': 'ops://V/I/password', 'resolved': None, 'sensitive': True},
+            },
+        }
+        result = _resolve_fields(entry)
+        assert result == {'password': 'secret123'}
+
+    @patch('ssh_concierge.field.resolve_single')
+    def test_password_failure_returns_none(self, mock_resolve):
+        mock_resolve.return_value = None
+        entry = {
+            'fields': {
+                'password': {'original': 'ops://V/I/password', 'resolved': None, 'sensitive': True},
+            },
+        }
+        result = _resolve_fields(entry)
+        assert result is None
+
+    @patch('ssh_concierge.field.resolve_single')
+    def test_non_password_failure_skipped(self, mock_resolve):
+        mock_resolve.return_value = None
+        entry = {
+            'fields': {
+                'hostname': {'original': 'op://V/I/hostname', 'resolved': None, 'sensitive': False},
+                'user': {'original': 'deploy', 'resolved': 'deploy', 'sensitive': False},
+            },
+        }
+        result = _resolve_fields(entry)
+        # hostname resolution failed but non-critical, user still present
+        assert result == {'user': 'deploy'}
+
+    def test_legacy_refs_fallback(self):
+        """Legacy format without fields key falls back to _resolve_refs."""
+        entry = {'refs': {'user': 'admin'}}
+        result = _resolve_fields(entry)
+        assert result == {'user': 'admin'}
+
+    @patch('ssh_concierge.field.resolve_single')
+    def test_fallback_chain(self, mock_resolve):
+        mock_resolve.side_effect = [None, 'backup-pw']
+        entry = {
+            'fields': {
+                'password': {
+                    'original': 'op://V/I/pw||op://V/Backup/pw',
+                    'resolved': None,
+                    'sensitive': True,
+                },
+            },
+        }
+        result = _resolve_fields(entry)
+        assert result == {'password': 'backup-pw'}
 
 
 class TestResolveClipboard:
@@ -311,7 +391,7 @@ class TestMain:
     @patch('ssh_concierge.wrap.resolve_via_op_read', return_value='secret')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
     def test_password_and_clipboard(self, mock_find, mock_resolve, mock_run, mock_clip, tmp_path: Path):
-        """Host with both password and clipboard."""
+        """Host with both password and clipboard (legacy refs format)."""
         hd_file = tmp_path / 'hostdata.json'
         hd_file.write_text(json.dumps({
             'myhost': {
@@ -328,3 +408,72 @@ class TestMain:
 
         mock_clip.assert_called_once_with('sudo -i\nsecret\n')
         mock_run.assert_called_once_with('/usr/bin/ssh', 'ssh', ['myhost'], 'secret')
+
+
+class TestMainNewFormat:
+    """Tests using the new fields-based hostdata format."""
+
+    @patch('ssh_concierge.wrap._run_with_askpass', return_value=0)
+    @patch('ssh_concierge.field.resolve_single', return_value='secret123')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_sensitive_password_resolved_at_ssh_time(self, mock_find, mock_resolve, mock_run, tmp_path: Path):
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://V/I/password', 'resolved': None, 'sensitive': True},
+                },
+            },
+        }))
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+                with pytest.raises(SystemExit) as exc_info:
+                    main()
+                assert exc_info.value.code == 0
+
+        mock_run.assert_called_once_with('/usr/bin/ssh', 'ssh', ['myhost'], 'secret123')
+
+    @patch('ssh_concierge.wrap.copy_to_clipboard', return_value=True)
+    @patch('ssh_concierge.wrap._run_with_askpass', return_value=0)
+    @patch('ssh_concierge.field.resolve_single', return_value='secret')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_clipboard_with_sensitive_field(self, mock_find, mock_resolve, mock_run, mock_clip, tmp_path: Path):
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://V/I/password', 'resolved': None, 'sensitive': True},
+                },
+                'clipboard': 'sudo -i\\n{password}\\n',
+            },
+        }))
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+                with pytest.raises(SystemExit) as exc_info:
+                    main()
+                assert exc_info.value.code == 0
+
+        mock_clip.assert_called_once_with('sudo -i\nsecret\n')
+        mock_run.assert_called_once_with('/usr/bin/ssh', 'ssh', ['myhost'], 'secret')
+
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_cached_non_sensitive_no_op_read(self, mock_find, mock_execv, tmp_path: Path):
+        """Non-sensitive fields with cached resolved values skip op read entirely."""
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'fields': {
+                    'hostname': {'original': 'op://V/I/hostname', 'resolved': '10.0.0.1', 'sensitive': False},
+                },
+            },
+        }))
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+                main()
+
+        # No password → falls through to execv
+        mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh', 'myhost'])

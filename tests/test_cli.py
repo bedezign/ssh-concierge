@@ -10,6 +10,7 @@ import pytest
 from ssh_concierge.cli import (
     cmd_generate, cmd_flush, cmd_status, cmd_list, cmd_debug, main,
     _parse_op_item_ref, _build_key_registry, _resolve_key_ref,
+    _load_cached_hostdata, _build_op_read_cache,
 )
 from ssh_concierge.deploy import cmd_deploy_key
 from ssh_concierge.models import HostConfig
@@ -147,8 +148,16 @@ SAMPLE_HOSTS_CONF = (
 )
 
 SAMPLE_HOSTDATA = {
-    "prod": {"refs": {"password": "op://Work/ServerLogin/password"}},
-    "prod-web-01": {"refs": {"password": "op://Work/ServerLogin/password"}},
+    "prod": {
+        "fields": {
+            "password": {"original": "op://Work/ServerLogin/password", "resolved": None, "sensitive": True},
+        },
+    },
+    "prod-web-01": {
+        "fields": {
+            "password": {"original": "op://Work/ServerLogin/password", "resolved": None, "sensitive": True},
+        },
+    },
 }
 
 
@@ -216,7 +225,9 @@ class TestCmdDebug:
         (runtime_dir / "hosts.conf").write_text(SAMPLE_HOSTS_CONF)
         hd = {
             "prod": {
-                "refs": {"password": "op://Work/ServerLogin/password"},
+                "fields": {
+                    "password": {"original": "op://Work/ServerLogin/password", "resolved": None, "sensitive": True},
+                },
                 "clipboard": "sudo -i\\n{password}\\n",
             },
         }
@@ -293,6 +304,19 @@ class TestMain:
             with pytest.raises(SystemExit):
                 main()
 
+    @patch("ssh_concierge.cli.cmd_generate")
+    def test_no_cache_flag(self, mock_gen):
+        with patch("sys.argv", ["ssh-concierge", "--generate", "--no-cache"]):
+            main()
+        mock_gen.assert_called_once()
+        kwargs = mock_gen.call_args[1]
+        assert kwargs['no_cache'] is True
+
+    def test_no_cache_without_generate_fails(self):
+        with patch("sys.argv", ["ssh-concierge", "--list", "--no-cache"]):
+            with pytest.raises(SystemExit):
+                main()
+
 
 def _make_item_fields(host: HostConfig) -> list[dict]:
     """Helper to create op item fields dict from a HostConfig."""
@@ -315,6 +339,132 @@ def _make_item_fields(host: HostConfig) -> list[dict]:
             "section": {"id": "sshconfig", "label": "SSH Config"},
         })
     return fields
+
+
+class TestLoadCachedHostdata:
+    def test_no_file(self, runtime_dir: Path):
+        assert _load_cached_hostdata(runtime_dir) == {}
+
+    def test_empty_file(self, runtime_dir: Path):
+        runtime_dir.mkdir(parents=True)
+        (runtime_dir / 'hostdata.json').write_text('{}')
+        assert _load_cached_hostdata(runtime_dir) == {}
+
+    def test_loads_fields(self, runtime_dir: Path):
+        runtime_dir.mkdir(parents=True)
+        hd = {
+            'myhost': {
+                'fields': {
+                    'hostname': {'original': 'op://V/I/hostname', 'resolved': '10.0.0.1', 'sensitive': False},
+                    'password': {'original': 'ops://V/I/pw', 'resolved': None, 'sensitive': True},
+                },
+            },
+        }
+        (runtime_dir / 'hostdata.json').write_text(json.dumps(hd))
+        result = _load_cached_hostdata(runtime_dir)
+        assert 'myhost' in result
+        assert result['myhost']['hostname'].original == 'op://V/I/hostname'
+        assert result['myhost']['hostname'].resolved == '10.0.0.1'
+        assert result['myhost']['password'].sensitive is True
+
+    def test_skips_entries_without_fields(self, runtime_dir: Path):
+        runtime_dir.mkdir(parents=True)
+        hd = {
+            'myhost': {'clipboard': 'hello'},
+        }
+        (runtime_dir / 'hostdata.json').write_text(json.dumps(hd))
+        result = _load_cached_hostdata(runtime_dir)
+        assert 'myhost' not in result
+
+    def test_bad_json(self, runtime_dir: Path):
+        runtime_dir.mkdir(parents=True)
+        (runtime_dir / 'hostdata.json').write_text('not json')
+        assert _load_cached_hostdata(runtime_dir) == {}
+
+
+class TestBuildOpReadCache:
+    def test_indexes_item_level_fields(self):
+        items = [
+            {
+                'id': 'item1',
+                'vault': {'id': 'vault1'},
+                'fields': [
+                    {'label': 'public key', 'value': 'ssh-ed25519 AAAA'},
+                    {'label': 'fingerprint', 'value': 'SHA256:abc'},
+                ],
+            },
+        ]
+        cache = _build_op_read_cache(items)
+        assert cache['op://vault1/item1/public key'] == 'ssh-ed25519 AAAA'
+        assert cache['op://vault1/item1/fingerprint'] == 'SHA256:abc'
+
+    def test_indexes_section_fields(self):
+        items = [
+            {
+                'id': 'item1',
+                'vault': {'id': 'vault1'},
+                'fields': [
+                    {
+                        'label': 'password',
+                        'value': 'secret123',
+                        'section': {'id': 's1', 'label': 'SSH Config'},
+                    },
+                    {
+                        'label': 'hostname',
+                        'value': '10.0.0.1',
+                        'section': {'id': 's1', 'label': 'SSH Config'},
+                    },
+                ],
+            },
+        ]
+        cache = _build_op_read_cache(items)
+        assert cache['op://vault1/item1/ssh config/password'] == 'secret123'
+        assert cache['op://vault1/item1/ssh config/hostname'] == '10.0.0.1'
+
+    def test_keys_are_lowercased(self):
+        items = [
+            {
+                'id': 'item1',
+                'vault': {'id': 'vault1'},
+                'fields': [
+                    {'label': 'URL', 'value': 'workbench1.example.com'},
+                ],
+            },
+        ]
+        cache = _build_op_read_cache(items)
+        assert cache['op://vault1/item1/url'] == 'workbench1.example.com'
+        assert 'op://vault1/item1/URL' not in cache
+
+    def test_skips_empty_values(self):
+        items = [
+            {
+                'id': 'item1',
+                'vault': {'id': 'vault1'},
+                'fields': [
+                    {'label': 'empty', 'value': ''},
+                ],
+            },
+        ]
+        cache = _build_op_read_cache(items)
+        assert len(cache) == 0
+
+    def test_multiple_items(self):
+        items = [
+            {
+                'id': 'i1', 'vault': {'id': 'v1'},
+                'fields': [{'label': 'password', 'value': 'pw1', 'section': {'id': 's', 'label': 'SSH Config'}}],
+            },
+            {
+                'id': 'i2', 'vault': {'id': 'v2'},
+                'fields': [{'label': 'password', 'value': 'pw2', 'section': {'id': 's', 'label': 'SSH Config'}}],
+            },
+        ]
+        cache = _build_op_read_cache(items)
+        assert cache['op://v1/i1/ssh config/password'] == 'pw1'
+        assert cache['op://v2/i2/ssh config/password'] == 'pw2'
+
+    def test_empty_items(self):
+        assert _build_op_read_cache([]) == {}
 
 
 class TestParseOpItemRef:
@@ -487,7 +637,9 @@ class TestCmdDebugKeyRef:
         hd = {
             'prod': {
                 'key': 'op://Work/ProdKey',
-                'refs': {'password': 'op://Work/ServerLogin/password'},
+                'fields': {
+                    'password': {'original': 'op://Work/ServerLogin/password', 'resolved': None, 'sensitive': True},
+                },
             },
         }
         (runtime_dir / 'hostdata.json').write_text(json.dumps(hd))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -16,36 +17,114 @@ from ssh_concierge import onepassword
 from ssh_concierge.config import generate_runtime_config
 from ssh_concierge.deploy import cmd_deploy_key
 from ssh_concierge.expand import expand_host_config
+from ssh_concierge.field import FieldValue, normalize_original
 from ssh_concierge.models import HostConfig
-from ssh_concierge.password import ItemMeta, build_op_reference
+from ssh_concierge.password import ItemMeta
 
 
-def _build_hostdata_entry(host: HostConfig, meta: ItemMeta) -> dict | None:
-    """Build a hostdata entry for a host (refs + clipboard template).
+def _build_op_read_cache(raw_items: list[dict]) -> dict[str, str]:
+    """Build an in-memory cache of op:// reference → value from fetched items.
 
-    Returns None if the host has neither password nor clipboard.
+    Indexes every field from every fetched item so that resolve_single() can
+    do a dict lookup instead of calling `op read` for references we already have.
+
+    Keys are lowercased op://{vault_id}/{item_id}/{field_label} for item-level
+    fields and op://{vault_id}/{item_id}/{section_label}/{field_label} for
+    section fields. The `op` CLI does case-insensitive field name matching,
+    so we mirror that by lowercasing keys and looking up with lowercased refs.
+    """
+    cache: dict[str, str] = {}
+    for item in raw_items:
+        vault_id = item.get('vault', {}).get('id', '')
+        item_id = item.get('id', '')
+        if not vault_id or not item_id:
+            continue
+        prefix = f'op://{vault_id}/{item_id}'
+        for field in item.get('fields', []):
+            value = field.get('value', '')
+            if not value:
+                continue
+            label = field.get('label', '')
+            if not label:
+                continue
+            section = field.get('section')
+            if section:
+                section_label = section.get('label', '')
+                if section_label:
+                    cache[f'{prefix}/{section_label}/{label}'.lower()] = value
+            else:
+                cache[f'{prefix}/{label}'.lower()] = value
+    return cache
+
+
+def _build_hostdata_entry(
+    host: HostConfig,
+    meta: ItemMeta,
+    cached_fields: dict[str, FieldValue] | None,
+    *,
+    no_cache: bool = False,
+    op_read_cache: dict[str, str] | None = None,
+) -> dict | None:
+    """Build a hostdata entry for a host using FieldValue resolution.
+
+    Returns None if the host has no fields worth storing.
     """
     entry: dict = {}
-    refs: dict[str, str] = {}
+    fields: dict[str, FieldValue] = {}
 
-    if host.password and host.section_label:
-        refs['password'] = build_op_reference(host.password, meta, host.section_label)
+    # Collect all raw fields from the host
+    raw_fields: dict[str, str] = {}
+    if host.password:
+        raw_fields['password'] = host.password
+    if host.hostname:
+        raw_fields['hostname'] = host.hostname
+    if host.user:
+        raw_fields['user'] = host.user
+    if host.port:
+        raw_fields['port'] = host.port
 
+    # Include extra directive fields that have op:// or ops:// references
+    for directive, value in host.extra_directives.items():
+        if '://' in value:
+            raw_fields[directive] = value
+
+    # Also include fields referenced in clipboard template
     if host.clipboard and host.section_label:
         entry['clipboard'] = host.clipboard
         for field_name in re.findall(r'\{(\w+)\}', host.clipboard):
-            if field_name not in refs:
+            if field_name not in raw_fields:
                 field_val = _get_host_field(host, field_name)
                 if field_val:
-                    refs[field_name] = _to_ref_or_literal(
-                        field_val, meta, host.section_label,
-                    )
+                    raw_fields[field_name] = field_val
 
     if host.key_ref:
         entry['key'] = host.key_ref
 
-    if refs:
-        entry['refs'] = refs
+    # Create FieldValues, check cache, resolve non-sensitive
+    for name, raw in raw_fields.items():
+        # Normalize self-refs so the wrapper can resolve without item metadata
+        raw = normalize_original(raw, meta.vault_id, meta.item_id)
+        fv = FieldValue.from_raw(raw, name)
+        cached = cached_fields.get(name) if cached_fields and not no_cache else None
+
+        if fv.sensitive:
+            # Sensitive: store raw, never resolve at gen time
+            # But normalize the reference for storage
+            fields[name] = fv
+        elif not fv.needs_resolution(cached):
+            # Cache hit: reuse cached resolved value
+            fields[name] = cached  # type: ignore[assignment]
+        else:
+            # Resolve now
+            fields[name] = fv.resolve(
+                vault_id=meta.vault_id,
+                item_id=meta.item_id,
+                op_read_cache=op_read_cache,
+            )
+
+    if fields:
+        entry['fields'] = {name: fv.to_hostdata() for name, fv in fields.items()}
+
     return entry or None
 
 
@@ -59,13 +138,28 @@ def _get_host_field(host: HostConfig, name: str) -> str | None:
     }.get(name)
 
 
-def _to_ref_or_literal(
-    value: str, meta: ItemMeta, section_label: str,
-) -> str:
-    """Convert a field value to an op:// reference or keep as literal."""
-    if value.startswith('op://'):
-        return build_op_reference(value, meta, section_label)
-    return value
+def _load_cached_hostdata(runtime_dir: Path) -> dict[str, dict[str, FieldValue]]:
+    """Load cached field data from existing hostdata.json.
+
+    Returns {alias: {field_name: FieldValue}}.
+    """
+    hd_path = runtime_dir / 'hostdata.json'
+    if not hd_path.is_file():
+        return {}
+    try:
+        data = json.loads(hd_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+    result: dict[str, dict[str, FieldValue]] = {}
+    for alias, entry in data.items():
+        fields_data = entry.get('fields', {})
+        if fields_data:
+            result[alias] = {
+                name: FieldValue.from_hostdata(fdata, name)
+                for name, fdata in fields_data.items()
+            }
+    return result
 
 
 def _parse_op_item_ref(ref: str) -> tuple[str, str]:
@@ -146,7 +240,12 @@ def _default_runtime_dir() -> Path:
     return Path("/tmp") / f"ssh-concierge-{os.getuid()}"
 
 
-def cmd_generate(runtime_dir: Path, *, quiet: bool = False) -> None:
+def cmd_generate(
+    runtime_dir: Path,
+    *,
+    quiet: bool = False,
+    no_cache: bool = False,
+) -> None:
     """Query 1Password and regenerate the runtime config."""
     runtime_dir.mkdir(parents=True, exist_ok=True)
     lock_path = runtime_dir / ".lock"
@@ -176,6 +275,9 @@ def cmd_generate(runtime_dir: Path, *, quiet: bool = False) -> None:
         if not quiet:
             print("Querying 1Password...")
 
+        # Load cached hostdata for cache comparison
+        cached_hostdata = _load_cached_hostdata(runtime_dir) if not no_cache else {}
+
         item_ids = onepassword.list_managed_item_ids()
         hosts = []
         hostdata: dict[str, dict] = {}
@@ -196,13 +298,23 @@ def cmd_generate(runtime_dir: Path, *, quiet: bool = False) -> None:
                 parsed.append((host, meta))
 
         key_registry = _build_key_registry(raw_items)
+        op_read_cache = _build_op_read_cache(raw_items)
 
         # Second pass: resolve key refs, expand, generate
         for host, meta in parsed:
             host = _resolve_key_ref(host, key_registry)
             for expanded in expand_host_config(host):
                 hosts.append(expanded)
-                entry = _build_hostdata_entry(expanded, meta)
+                # Use first non-wildcard alias for cache lookup
+                cache_alias = next(
+                    (a for a in expanded.aliases if '*' not in a and '?' not in a),
+                    None,
+                )
+                cached_fields = cached_hostdata.get(cache_alias) if cache_alias else None
+                entry = _build_hostdata_entry(
+                    expanded, meta, cached_fields,
+                    no_cache=no_cache, op_read_cache=op_read_cache,
+                )
                 if entry:
                     for alias in expanded.aliases:
                         if '*' not in alias and '?' not in alias:
@@ -211,7 +323,11 @@ def cmd_generate(runtime_dir: Path, *, quiet: bool = False) -> None:
         generate_runtime_config(hosts, runtime_dir, hostdata or None)
 
         password_count = sum(
-            1 for e in hostdata.values() if 'password' in e.get('refs', {})
+            1 for e in hostdata.values()
+            if any(
+                f.get('sensitive')
+                for f in e.get('fields', {}).values()
+            )
         )
         clipboard_count = sum(
             1 for e in hostdata.values() if 'clipboard' in e
@@ -301,15 +417,29 @@ def cmd_debug(alias: str, runtime_dir: Path) -> None:
         key = entry.get('key')
         if key:
             print(f'    # Key: {key}')
-        refs = entry.get('refs', {})
-        if 'password' in refs:
-            print(f'    # Password: {refs["password"]}')
+
+        fields = entry.get('fields', {})
+        # Show password info
+        pw_field = fields.get('password', {})
+        if pw_field:
+            print(f'    # Password: {pw_field.get("original", "?")}')
+
         clipboard = entry.get('clipboard')
         if clipboard:
             print(f'    # Clipboard: {clipboard!r}')
-            for name, ref in refs.items():
+            for name, fdata in fields.items():
                 if name != 'password':
-                    print(f'    #   {name}: {ref}')
+                    print(f'    #   {name}: {fdata.get("original", "?")}')
+
+        # Legacy format support
+        refs = entry.get('refs', {})
+        if refs and not fields:
+            if 'password' in refs:
+                print(f'    # Password: {refs["password"]}')
+            if clipboard:
+                for name, ref in refs.items():
+                    if name != 'password':
+                        print(f'    #   {name}: {ref}')
 
     # Config age
     age_secs = time.time() - conf.stat().st_mtime
@@ -347,6 +477,7 @@ def main() -> None:
     group.add_argument("--deploy-key", metavar="ALIAS", help="Deploy SSH key to a host")
 
     parser.add_argument("--all", action="store_true", help="Deploy to all sibling hosts (only with --deploy-key)")
+    parser.add_argument("--no-cache", action="store_true", help="Force re-resolution of all field references")
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress informational output")
 
     args = parser.parse_args()
@@ -354,10 +485,13 @@ def main() -> None:
     if args.all and not args.deploy_key:
         parser.error("--all can only be used with --deploy-key")
 
+    if args.no_cache and not args.generate:
+        parser.error("--no-cache can only be used with --generate")
+
     runtime_dir = _default_runtime_dir()
 
     if args.generate:
-        cmd_generate(runtime_dir, quiet=args.quiet)
+        cmd_generate(runtime_dir, quiet=args.quiet, no_cache=args.no_cache)
     elif args.flush:
         cmd_flush(runtime_dir, quiet=args.quiet)
     elif args.list:

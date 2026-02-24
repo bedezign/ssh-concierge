@@ -1,0 +1,259 @@
+"""Field value model — classification, sensitivity, resolution, caching."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+OP_REF_PREFIX = 'op://'
+OPS_REF_PREFIX = 'ops://'
+SELF_PREFIX = './'
+CHAIN_SEPARATOR = '||'
+
+SENSITIVE_FIELD_NAMES = frozenset({'password', 'passwd', 'pass', 'secret', 'token'})
+
+
+def _is_reference(value: str) -> bool:
+    """Check if a value segment is a reference (contains ://)."""
+    return '://' in value
+
+
+def _has_template(value: str) -> bool:
+    """Check if a value contains {{...}} template syntax."""
+    return '{{' in value and '}}' in value
+
+
+def classify_type(raw: str) -> str:
+    """Classify a raw field value as 'reference', 'template', or 'literal'."""
+    if _is_reference(raw):
+        return 'reference'
+    if _has_template(raw):
+        return 'template'
+    return 'literal'
+
+
+def is_sensitive(raw: str, field_name: str) -> bool:
+    """Determine if a field is sensitive.
+
+    Sensitive if:
+    - Any segment in a || chain uses ops:// prefix
+    - The field name matches a known sensitive name
+    """
+    if field_name.lower() in SENSITIVE_FIELD_NAMES:
+        return True
+    if OPS_REF_PREFIX in raw:
+        return True
+    return False
+
+
+def normalize_segment(segment: str) -> str:
+    """Normalize a single reference segment: ops:// → op://, expand op://. shorthand.
+
+    Self-references (op://./...) require item_meta for full expansion — that
+    happens at resolution time. This only handles ops:// → op:// normalization.
+    """
+    return segment.replace(OPS_REF_PREFIX, OP_REF_PREFIX, 1) if segment.startswith(OPS_REF_PREFIX) else segment
+
+
+def expand_self_ref(reference: str, vault_id: str, item_id: str) -> str:
+    """Expand op://./field → op://{vault_id}/{item_id}/field."""
+    self_prefix = f'{OP_REF_PREFIX}{SELF_PREFIX}'
+    if reference.startswith(self_prefix):
+        suffix = reference[len(self_prefix):]
+        return f'{OP_REF_PREFIX}{vault_id}/{item_id}/{suffix}'
+    return reference
+
+
+def normalize_incomplete_ref(reference: str) -> str:
+    """Append /password to incomplete op:// references.
+
+    op://Vault/Item (1 slash after op://) → op://Vault/Item/password
+    op://Vault/Item/field (2+ slashes) → unchanged
+    """
+    if not reference.startswith(OP_REF_PREFIX):
+        return reference
+    path = reference[len(OP_REF_PREFIX):]
+    if path.count('/') < 2:
+        return f'{reference}/password'
+    return reference
+
+
+def normalize_original(raw: str, vault_id: str, item_id: str) -> str:
+    """Normalize self-refs and ops:// in a raw value for storage.
+
+    Expands op://./field → op://vault_id/item_id/field in each segment
+    of a || chain so the wrapper can resolve without item metadata.
+    Also normalizes incomplete references (appends /password).
+    Preserves ops:// prefix (sensitivity marker) — only expands the path.
+    """
+    segments = raw.split(CHAIN_SEPARATOR)
+    normalized = []
+    for segment in segments:
+        stripped = segment.strip()
+        if not stripped or not _is_reference(stripped):
+            normalized.append(segment)
+            continue
+
+        # Handle ops:// self-refs: ops://./field → ops://vault/item/field
+        ops_self = f'{OPS_REF_PREFIX}{SELF_PREFIX}'
+        if stripped.startswith(ops_self):
+            suffix = stripped[len(ops_self):]
+            normalized.append(f'{OPS_REF_PREFIX}{vault_id}/{item_id}/{suffix}')
+            continue
+
+        # Handle op:// self-refs
+        ref = expand_self_ref(stripped, vault_id, item_id)
+        # Normalize incomplete refs
+        ref = normalize_incomplete_ref(ref)
+        normalized.append(ref)
+
+    return CHAIN_SEPARATOR.join(normalized)
+
+
+def resolve_single(
+    reference: str,
+    op_read_cache: dict[str, str] | None = None,
+) -> str | None:
+    """Resolve a single op:// reference.
+
+    Checks op_read_cache first (populated from fetched items during generation),
+    falls back to `op read` CLI call. Cache keys are lowercased to match the
+    case-insensitive behavior of `op read`. Returns None on failure.
+    """
+    if op_read_cache is not None and reference.lower() in op_read_cache:
+        return op_read_cache[reference.lower()]
+
+    from ssh_concierge.onepassword import OpError, _run_op
+
+    try:
+        return _run_op(['read', reference]).strip()
+    except OpError as exc:
+        logger.warning('Failed to resolve reference %s: %s', reference, exc)
+        return None
+
+
+def resolve_chain(
+    raw: str,
+    vault_id: str | None = None,
+    item_id: str | None = None,
+    op_read_cache: dict[str, str] | None = None,
+) -> str | None:
+    """Resolve a || fallback chain.
+
+    Split on '||', try each segment left-to-right:
+    - Segment contains '://' → normalize ops://→op://, expand self-refs, resolve
+    - Otherwise → literal (use as-is if non-empty)
+
+    If op_read_cache is provided, references are looked up there before calling `op read`.
+    Returns first non-empty result, or None if all fail.
+    """
+    segments = raw.split(CHAIN_SEPARATOR)
+
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+
+        if _is_reference(segment):
+            # Normalize ops:// → op://
+            ref = normalize_segment(segment)
+            # Expand self-references
+            if vault_id and item_id:
+                ref = expand_self_ref(ref, vault_id, item_id)
+            # Normalize incomplete references
+            ref = normalize_incomplete_ref(ref)
+            result = resolve_single(ref, op_read_cache)
+            if result:
+                return result
+        else:
+            # Literal fallback
+            return segment
+
+    return None
+
+
+@dataclass(frozen=True)
+class FieldValue:
+    """Represents a field value with classification, sensitivity, and resolution state."""
+
+    original: str
+    resolved: str | None
+    sensitive: bool
+    field_type: str  # 'literal', 'reference', 'template'
+
+    @classmethod
+    def from_raw(cls, raw: str, field_name: str) -> FieldValue:
+        """Create a FieldValue from a raw 1Password field value."""
+        return cls(
+            original=raw,
+            resolved=None,
+            field_type=classify_type(raw),
+            sensitive=is_sensitive(raw, field_name),
+        )
+
+    def with_resolved(self, resolved: str | None) -> FieldValue:
+        """Return a new FieldValue with the resolved value set."""
+        return FieldValue(
+            original=self.original,
+            resolved=resolved,
+            sensitive=self.sensitive,
+            field_type=self.field_type,
+        )
+
+    def needs_resolution(self, cached: FieldValue | None) -> bool:
+        """Check if this field needs resolution (original changed or no cache)."""
+        if cached is None:
+            return True
+        if self.original != cached.original:
+            return True
+        return False
+
+    def resolve(
+        self,
+        vault_id: str | None = None,
+        item_id: str | None = None,
+        op_read_cache: dict[str, str] | None = None,
+    ) -> FieldValue:
+        """Resolve references and return a new FieldValue with the result.
+
+        Sensitive fields are NOT resolved here (they stay resolved=None).
+        Literals return themselves as resolved.
+        Templates are left unresolved (resolved at expansion time).
+        References are resolved via resolve_chain().
+
+        If op_read_cache is provided, it's checked before calling `op read`.
+        """
+        if self.sensitive:
+            return self
+
+        if self.field_type == 'literal':
+            return self.with_resolved(self.original)
+
+        if self.field_type == 'template':
+            # Templates are resolved during expansion, not here
+            return self.with_resolved(self.original)
+
+        # Reference type — resolve the chain
+        result = resolve_chain(self.original, vault_id, item_id, op_read_cache)
+        return self.with_resolved(result)
+
+    def to_hostdata(self) -> dict:
+        """Serialize for hostdata.json."""
+        return {
+            'original': self.original,
+            'resolved': self.resolved,
+            'sensitive': self.sensitive,
+        }
+
+    @classmethod
+    def from_hostdata(cls, data: dict, field_name: str) -> FieldValue:
+        """Restore from hostdata.json."""
+        original = data['original']
+        return cls(
+            original=original,
+            resolved=data.get('resolved'),
+            sensitive=data.get('sensitive', is_sensitive(original, field_name)),
+            field_type=classify_type(original),
+        )

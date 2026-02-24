@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ssh_concierge.argparse_ssh import extract_scp_host, extract_ssh_host
+from ssh_concierge.field import resolve_chain
 from ssh_concierge.password import askpass_env
 
 logger = logging.getLogger(__name__)
@@ -53,10 +54,16 @@ def lookup_hostdata(host: str, hostdata_path: Path) -> dict[str, Any] | None:
 def lookup_reference(host: str, hostdata_path: Path) -> str | None:
     """Look up an op:// password reference for a host.
 
-    Compat wrapper over lookup_hostdata for cmd_debug backward compatibility.
+    Supports both new fields format and legacy refs format.
     """
     entry = lookup_hostdata(host, hostdata_path)
     if entry:
+        # New format: fields dict
+        fields = entry.get('fields', {})
+        pw_field = fields.get('password', {})
+        if pw_field:
+            return pw_field.get('original')
+        # Legacy format: refs dict
         return entry.get('refs', {}).get('password')
     return None
 
@@ -72,8 +79,41 @@ def resolve_via_op_read(reference: str) -> str | None:
         return None
 
 
+def _resolve_fields(entry: dict) -> dict[str, str] | None:
+    """Resolve all fields from a hostdata entry.
+
+    For fields with resolved values (non-sensitive, cached), use them directly.
+    For fields without resolved values (sensitive), resolve via resolve_chain().
+    Returns resolved dict or None on critical failure.
+    """
+    fields = entry.get('fields', {})
+    if not fields:
+        # Legacy format fallback
+        return _resolve_refs(entry.get('refs', {}))
+
+    resolved: dict[str, str] = {}
+    for name, fdata in fields.items():
+        if fdata.get('resolved') is not None:
+            # Already resolved (non-sensitive, cached)
+            resolved[name] = fdata['resolved']
+        else:
+            # Needs resolution at SSH time (sensitive)
+            original = fdata.get('original', '')
+            result = resolve_chain(original)
+            if result is None:
+                # Password failure is critical — fall through to normal auth
+                if name == 'password':
+                    return None
+                # Other field failures are non-critical
+                continue
+            resolved[name] = result
+    return resolved
+
+
 def _resolve_refs(refs: dict[str, str]) -> dict[str, str] | None:
-    """Resolve all refs, returning resolved dict or None on any op:// failure."""
+    """Resolve all refs (legacy format), returning resolved dict or None on any op:// failure."""
+    if not refs:
+        return {}
     resolved: dict[str, str] = {}
     for name, value in refs.items():
         if value.startswith('op://'):
@@ -141,8 +181,7 @@ def main() -> None:
         runtime_dir = _default_runtime_dir()
         entry = lookup_hostdata(host, runtime_dir / 'hostdata.json')
         if entry:
-            refs = entry.get('refs', {})
-            resolved = _resolve_refs(refs) if refs else {}
+            resolved = _resolve_fields(entry)
 
             # Clipboard: resolve template and copy
             if resolved is not None and entry.get('clipboard'):

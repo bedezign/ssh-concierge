@@ -11,10 +11,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from ssh_concierge.field import (
+    OP_REF_PREFIX,
+    expand_self_ref,
+    normalize_incomplete_ref,
+    resolve_chain,
+)
+
 logger = logging.getLogger(__name__)
 
-OP_REF_PREFIX = 'op://'
-OP_SELF_PREFIX = 'op://./'
+OP_SELF_PREFIX = f'{OP_REF_PREFIX}./'
 
 
 @dataclass(frozen=True)
@@ -25,27 +31,26 @@ class ItemMeta:
     item_id: str
 
 
-def build_op_reference(raw_password: str, item_meta: ItemMeta, section_label: str) -> str:
-    """Convert a raw password value to a full op:// reference.
+def normalize_reference(raw: str, item_meta: ItemMeta, section_label: str) -> str:
+    """Normalize a raw field value into a full op:// reference.
 
     - op://./field → op://{vault}/{item}/field
     - op://Vault/Item/field → unchanged
     - op://Vault/Item → append /password (incomplete reference)
     - literal → op://{vault}/{item}/{section}/password  (points back to the field)
     """
-    if raw_password.startswith(OP_SELF_PREFIX):
-        suffix = raw_password[len(OP_SELF_PREFIX):]
-        return f'op://{item_meta.vault_id}/{item_meta.item_id}/{suffix}'
+    if raw.startswith(OP_SELF_PREFIX):
+        return expand_self_ref(raw, item_meta.vault_id, item_meta.item_id)
 
-    if raw_password.startswith(OP_REF_PREFIX):
-        # op://vault/item has 1 slash after op://, op://vault/item/field has 2+
-        path = raw_password[len(OP_REF_PREFIX):]
-        if path.count('/') < 2:
-            return f'{raw_password}/password'
-        return raw_password
+    if raw.startswith(OP_REF_PREFIX):
+        return normalize_incomplete_ref(raw)
 
     # Literal password — construct reference pointing back to the 1Password field
-    return f'op://{item_meta.vault_id}/{item_meta.item_id}/{section_label}/password'
+    return f'{OP_REF_PREFIX}{item_meta.vault_id}/{item_meta.item_id}/{section_label}/password'
+
+
+# Keep backward compat alias
+build_op_reference = normalize_reference
 
 
 def resolve_password(
@@ -59,35 +64,27 @@ def resolve_password(
       - Literal value (no op:// prefix) → returned as-is
       - op://./field or op://./Section/field → expanded to full op:// ref, then read
       - op://Vault/Item/field → read directly via `op read`
+      - || fallback chains
 
     Returns None on resolution failure (caller falls back to interactive).
     """
     if not raw_password:
         return None
 
-    if not raw_password.startswith(OP_REF_PREFIX):
+    if not raw_password.startswith(OP_REF_PREFIX) and '://' not in raw_password:
         return raw_password
 
-    # Expand op://. shorthand
-    reference = raw_password
-    if reference.startswith(OP_SELF_PREFIX):
-        if item_meta is None:
-            logger.warning(
-                'Cannot resolve %s without item metadata — falling back to interactive',
-                reference,
-            )
-            return None
-        suffix = reference[len(OP_SELF_PREFIX):]
-        reference = f'op://{item_meta.vault_id}/{item_meta.item_id}/{suffix}'
+    vault_id = item_meta.vault_id if item_meta else None
+    item_id = item_meta.item_id if item_meta else None
 
-    # Call op read
-    from ssh_concierge.onepassword import OpError, _run_op
-
-    try:
-        return _run_op(['read', reference]).strip()
-    except OpError as exc:
-        logger.warning('Failed to resolve password reference %s: %s', raw_password, exc)
+    if raw_password.startswith(OP_SELF_PREFIX) and item_meta is None:
+        logger.warning(
+            'Cannot resolve %s without item metadata — falling back to interactive',
+            raw_password,
+        )
         return None
+
+    return resolve_chain(raw_password, vault_id, item_id)
 
 
 @contextmanager

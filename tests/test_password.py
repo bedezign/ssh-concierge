@@ -15,6 +15,7 @@ from ssh_concierge.password import (
     _shell_escape,
     askpass_env,
     build_op_reference,
+    normalize_reference,
     resolve_password,
 )
 
@@ -125,6 +126,42 @@ class TestBuildOpReference:
         meta = ItemMeta(vault_id='v', item_id='i')
         ref = build_op_reference('op://Vault/Item', meta, 'SSH Config')
         assert ref == 'op://Vault/Item/password'
+
+
+class TestNormalizeReference:
+    def test_literal_password(self):
+        meta = ItemMeta(vault_id='vault-abc', item_id='item-123')
+        ref = normalize_reference('hunter2', meta, 'SSH Config')
+        assert ref == 'op://vault-abc/item-123/SSH Config/password'
+
+    def test_full_op_reference_unchanged(self):
+        meta = ItemMeta(vault_id='v', item_id='i')
+        ref = normalize_reference('op://MyVault/MyItem/password', meta, 'SSH Config')
+        assert ref == 'op://MyVault/MyItem/password'
+
+    def test_self_reference(self):
+        meta = ItemMeta(vault_id='vault-abc', item_id='item-123')
+        ref = normalize_reference('op://./password', meta, 'SSH Config')
+        assert ref == 'op://vault-abc/item-123/password'
+
+    def test_incomplete_appends_password(self):
+        meta = ItemMeta(vault_id='v', item_id='i')
+        ref = normalize_reference('op://Vault/Item', meta, 'SSH Config')
+        assert ref == 'op://Vault/Item/password'
+
+
+class TestResolvePasswordFallbackChain:
+    @patch('ssh_concierge.onepassword._run_op')
+    def test_fallback_chain(self, mock_run_op):
+        mock_run_op.side_effect = [OpError('fail'), 'backup-pw\n']
+        result = resolve_password('op://V/I/pw||op://V/Backup/pw')
+        assert result == 'backup-pw'
+
+    @patch('ssh_concierge.onepassword._run_op')
+    def test_fallback_to_literal(self, mock_run_op):
+        mock_run_op.side_effect = OpError('fail')
+        result = resolve_password('op://V/I/pw||default-password')
+        assert result == 'default-password'
 
 
 class TestAskpassEnv:
