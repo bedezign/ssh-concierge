@@ -74,6 +74,12 @@ class TestResolvePassword:
         result = resolve_password('op://./password', op)
         assert result is None
 
+    def test_ops_prefix_normalized_to_op(self):
+        op = _mock_op(return_value='secret')
+        result = resolve_password('ops://Vault/Item/password', op)
+        assert result == 'secret'
+        op.read.assert_called_once_with('op://Vault/Item/password')
+
     def test_op_read_failure_returns_none(self):
         op = _mock_op(return_value=None)
         result = resolve_password('op://Vault/Item/field', op)
