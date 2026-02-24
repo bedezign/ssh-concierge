@@ -42,7 +42,7 @@ def find_real_binary(tool: str) -> str | None:
 
 
 def lookup_hostdata(host: str, hostdata_path: Path) -> dict[str, Any] | None:
-    """Look up a host entry in hostdata.json."""
+    """Look up a host entry in the host data cache."""
     if not hostdata_path.is_file():
         return None
     try:

@@ -305,13 +305,8 @@ def parse_item_to_host_configs(item: dict[str, Any]) -> list[HostConfig]:
 
         def _fv(key: str, *fallback_keys: str) -> FieldValue | None:
             """Get a field value as FieldValue, trying key then fallbacks."""
-            raw = _val(key)
-            for fk in fallback_keys:
-                if raw is None:
-                    raw = _val(fk)
-            if raw is None:
-                return None
-            return FieldValue.from_raw(raw, key)
+            raw = next((v for k in (key, *fallback_keys) if (v := _val(k)) is not None), None)
+            return FieldValue.from_raw(raw, key) if raw is not None else None
 
         hosts.append(HostConfig(
             aliases=aliases,

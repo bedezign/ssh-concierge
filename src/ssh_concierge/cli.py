@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import fcntl
+import itertools
 import json
 import os
 import re
@@ -59,22 +60,17 @@ def resolve_host_fields(
 
         return fv.resolve(op, vault_id=meta.vault_id, item_id=meta.item_id)
 
-    hostname = _resolve_field('hostname', host.hostname) if host.hostname else None
-    port = _resolve_field('port', host.port) if host.port else None
-    user = _resolve_field('user', host.user) if host.user else None
-    password = _resolve_field('password', host.password) if host.password else None
-
-    extra = {k: _resolve_field(k, fv) for k, fv in host.extra_directives.items()}
-    custom = {k: _resolve_field(k, fv) for k, fv in host.custom_fields.items()}
+    def _resolve_optional(name: str, fv: FieldValue | None) -> FieldValue | None:
+        return _resolve_field(name, fv) if fv else None
 
     return dataclasses.replace(
         host,
-        hostname=hostname,
-        port=port,
-        user=user,
-        password=password,
-        extra_directives=extra,
-        custom_fields=custom,
+        hostname=_resolve_optional('hostname', host.hostname),
+        port=_resolve_optional('port', host.port),
+        user=_resolve_optional('user', host.user),
+        password=_resolve_optional('password', host.password),
+        extra_directives={k: _resolve_field(k, fv) for k, fv in host.extra_directives.items()},
+        custom_fields={k: _resolve_field(k, fv) for k, fv in host.custom_fields.items()},
     )
 
 
@@ -84,17 +80,13 @@ def _build_hostdata_entry(host: HostConfig) -> dict | None:
     Iterates all FieldValues already on the HostConfig and serializes them.
     Returns None if the host has no fields worth storing.
     """
-    entry: dict = {}
+    fields = {name: fv.to_hostdata() for name, fv in _iter_host_fields(host)}
 
+    entry: dict = {}
     if host.clipboard:
         entry['clipboard'] = host.clipboard
     if host.key_ref:
         entry['key'] = host.key_ref
-
-    fields: dict[str, dict] = {}
-    for name, fv in _iter_host_fields(host):
-        fields[name] = fv.to_hostdata()
-
     if fields:
         entry['fields'] = fields
 
@@ -103,22 +95,19 @@ def _build_hostdata_entry(host: HostConfig) -> dict | None:
 
 def _iter_host_fields(host: HostConfig):
     """Yield (name, FieldValue) for all resolvable fields on a HostConfig."""
-    if host.password:
-        yield 'password', host.password
-    if host.hostname:
-        yield 'hostname', host.hostname
-    if host.port:
-        yield 'port', host.port
-    if host.user:
-        yield 'user', host.user
-    for name, fv in host.extra_directives.items():
-        yield name, fv
-    for name, fv in host.custom_fields.items():
-        yield name, fv
+    named = [
+        ('password', host.password),
+        ('hostname', host.hostname),
+        ('port', host.port),
+        ('user', host.user),
+    ]
+    scalar_fields = ((name, fv) for name, fv in named if fv is not None)
+    dict_fields = itertools.chain(host.extra_directives.items(), host.custom_fields.items())
+    yield from itertools.chain(scalar_fields, dict_fields)
 
 
 def _load_cached_hostdata(runtime_dir: Path) -> dict[str, dict[str, FieldValue]]:
-    """Load cached field data from existing hostdata.json.
+    """Load cached field data from the existing host data cache.
 
     Returns {alias: {field_name: FieldValue}}.
     """
@@ -130,15 +119,14 @@ def _load_cached_hostdata(runtime_dir: Path) -> dict[str, dict[str, FieldValue]]
     except (json.JSONDecodeError, OSError):
         return {}
 
-    result: dict[str, dict[str, FieldValue]] = {}
-    for alias, entry in data.items():
-        fields_data = entry.get('fields', {})
-        if fields_data:
-            result[alias] = {
-                name: FieldValue.from_hostdata(fdata, name)
-                for name, fdata in fields_data.items()
-            }
-    return result
+    return {
+        alias: {
+            name: FieldValue.from_hostdata(fdata, name)
+            for name, fdata in entry.get('fields', {}).items()
+        }
+        for alias, entry in data.items()
+        if entry.get('fields')
+    }
 
 
 def _parse_op_item_ref(ref: str) -> tuple[str, str]:
@@ -153,62 +141,60 @@ def _parse_op_item_ref(ref: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def _build_key_registry(
-    items: list[dict],
-) -> dict[tuple[str, str], tuple[str, str]]:
+def _extract_key_pair(item: dict) -> tuple[str, str] | None:
+    """Extract (public_key, fingerprint) from top-level item fields, or None."""
+    public_key = None
+    fingerprint = None
+    for f in item.get('fields', []):
+        if f.get('section'):
+            continue
+        label = f.get('label')
+        if label == 'public key':
+            public_key = f.get('value')
+        elif label == 'fingerprint':
+            fingerprint = f.get('value')
+    return (public_key, fingerprint) if public_key and fingerprint else None
+
+
+def _build_key_registry(items: list[dict]) -> dict[tuple, tuple[str, str]]:
     """Build a registry of SSH key data from fetched items.
 
-    Returns a dict mapping (vault_name.lower(), title.lower()) and
-    (item_id,) → (public_key, fingerprint).
+    Maps (vault_name.lower(), title.lower()) and (item_id,) → (public_key, fingerprint).
     """
-    registry: dict = {}
+    registry: dict[tuple, tuple[str, str]] = {}
     for item in items:
-        fields = item.get('fields', [])
-        public_key = None
-        fingerprint = None
-        for field in fields:
-            if field.get('section'):
-                continue
-            if field.get('label') == 'public key':
-                public_key = field.get('value')
-            elif field.get('label') == 'fingerprint':
-                fingerprint = field.get('value')
-        if public_key and fingerprint:
-            vault_name = item.get('vault', {}).get('name', '')
-            title = item.get('title', '')
-            if vault_name and title:
-                registry[(vault_name.lower(), title.lower())] = (public_key, fingerprint)
-            item_id = item.get('id', '')
-            if item_id:
-                registry[(item_id,)] = (public_key, fingerprint)
+        key_pair = _extract_key_pair(item)
+        if not key_pair:
+            continue
+        vault_name = item.get('vault', {}).get('name', '')
+        title = item.get('title', '')
+        item_id = item.get('id', '')
+        if vault_name and title:
+            registry[(vault_name.lower(), title.lower())] = key_pair
+        if item_id:
+            registry[(item_id,)] = key_pair
     return registry
 
 
-def _resolve_key_ref(
-    host: HostConfig,
-    key_registry: dict,
-) -> HostConfig:
+def _resolve_key_ref(host: HostConfig, key_registry: dict) -> HostConfig:
     """Resolve a key_ref on a HostConfig against the key registry.
 
     If the host already has a public_key or has no key_ref, returns unchanged.
     """
     if not host.key_ref or host.public_key:
         return host
+
     try:
         vault, title = _parse_op_item_ref(host.key_ref)
     except ValueError:
-        print(
-            f'ssh-concierge: invalid key reference "{host.key_ref}"',
-            file=sys.stderr,
-        )
+        print(f'ssh-concierge: invalid key reference "{host.key_ref}"', file=sys.stderr)
         return host
+
     key = key_registry.get((vault.lower(), title.lower()))
     if not key:
-        print(
-            f'ssh-concierge: key "{host.key_ref}" not found',
-            file=sys.stderr,
-        )
+        print(f'ssh-concierge: key "{host.key_ref}" not found', file=sys.stderr)
         return host
+
     return dataclasses.replace(host, public_key=key[0], fingerprint=key[1])
 
 
@@ -305,14 +291,9 @@ def cmd_generate(
 
         password_count = sum(
             1 for e in hostdata.values()
-            if any(
-                f.get('sensitive')
-                for f in e.get('fields', {}).values()
-            )
+            if any(f.get('sensitive') for f in e.get('fields', {}).values())
         )
-        clipboard_count = sum(
-            1 for e in hostdata.values() if 'clipboard' in e
-        )
+        clipboard_count = sum(1 for e in hostdata.values() if 'clipboard' in e)
         if not quiet:
             print(
                 f"Generated: {len(hosts)} hosts from {items_processed} items"

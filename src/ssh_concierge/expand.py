@@ -54,10 +54,7 @@ def _has_alias(value: str | None) -> bool:
 
 def _needs_per_alias_expansion(host: HostConfig) -> bool:
     """Check if any field needs per-alias expansion (regex or {{alias}} template)."""
-    for value in _iter_field_values(host):
-        if _is_regex(value) or _has_alias(value):
-            return True
-    return False
+    return any(_is_regex(v) or _has_alias(v) for v in _iter_field_values(host))
 
 
 def _iter_field_values(host: HostConfig):
@@ -105,24 +102,20 @@ def expand_host_config(host: HostConfig) -> list[HostConfig]:
     if not _needs_per_alias_expansion(host):
         return [host]
 
-    result = []
-    for alias in host.aliases:
-        result.append(HostConfig(
+    return [
+        HostConfig(
             aliases=[alias],
             hostname=_resolve_fv(host.hostname, alias),
             port=host.port,
             user=_resolve_fv(host.user, alias),
             public_key=host.public_key,
             fingerprint=host.fingerprint,
-            extra_directives={
-                k: _resolve_fv(fv, alias) or fv
-                for k, fv in host.extra_directives.items()
-            },
+            extra_directives={k: _resolve_fv(fv, alias) or fv for k, fv in host.extra_directives.items()},
             custom_fields=host.custom_fields,
             section_label=host.section_label,
             password=host.password,
             clipboard=host.clipboard,
             key_ref=host.key_ref,
-        ))
-
-    return result
+        )
+        for alias in host.aliases
+    ]

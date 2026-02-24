@@ -147,12 +147,10 @@ def cmd_deploy_key(alias: str, all_siblings: bool, runtime_dir: Path) -> None:
 
     targets: list[HostConfig] = [host]
     if all_siblings:
-        siblings = find_siblings(host, hosts)
-        sibling_hosts = [s for s, _ in siblings]
-        targets.extend(sibling_hosts)
+        sibling_hosts = [s for s, _ in find_siblings(host, hosts)]
         if sibling_hosts:
-            names = ', '.join(s.aliases[0] for s in sibling_hosts)
-            print(f'Including siblings: {names}')
+            print(f'Including siblings: {", ".join(s.aliases[0] for s in sibling_hosts)}')
+            targets.extend(sibling_hosts)
 
     failed: list[str] = []
     for target in targets:

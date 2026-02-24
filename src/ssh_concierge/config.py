@@ -1,4 +1,4 @@
-"""Runtime config generation — hosts.conf + public keys."""
+"""Runtime config generation — SSH config + public keys."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def generate_runtime_config(
     runtime_dir: Path,
     hostdata: dict[str, dict] | None = None,
 ) -> None:
-    """Generate the complete runtime config: hosts.conf + key files + hostdata.json.
+    """Generate the complete runtime config: SSH config + key files + host data cache.
 
     Writes atomically via temp file + rename.
     hostdata maps alias → {fields: {name: {original, resolved, sensitive}}, clipboard, key}.
@@ -64,7 +64,7 @@ def generate_runtime_config(
             _atomic_write(key_file, host.public_key + "\n")
             key_file.chmod(0o644)
 
-    # Generate hosts.conf
+    # Generate SSH config
     blocks = [HEADER]
     for host in hosts:
         blocks.append("")
@@ -74,7 +74,7 @@ def generate_runtime_config(
     conf_path = runtime_dir / "hosts.conf"
     _atomic_write(conf_path, content)
 
-    # Write hostdata.json (op:// references only, never plaintext)
+    # Write host data cache (op:// references only, never plaintext)
     hd_path = runtime_dir / "hostdata.json"
     if hostdata:
         _atomic_write(hd_path, json.dumps(hostdata, indent=2) + "\n")
@@ -84,13 +84,16 @@ def generate_runtime_config(
 
 def _atomic_write(path: Path, content: str) -> None:
     """Write content to path atomically using temp file + rename."""
-    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f'.{path.name}.')
     try:
         os.write(fd, content.encode())
         os.close(fd)
         os.rename(tmp_path, path)
     except BaseException:
-        os.close(fd) if not os.get_inheritable(fd) else None
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         try:
             os.unlink(tmp_path)
         except OSError:

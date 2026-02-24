@@ -43,13 +43,10 @@ def is_sensitive(raw: str, field_name: str) -> bool:
 
     Sensitive if:
     - Any segment in a || chain uses ops:// prefix
-    - The field name matches a known sensitive name
+    - The field name contains a known sensitive name (e.g. sudo_password, api_token)
     """
-    if field_name.lower() in SENSITIVE_FIELD_NAMES:
-        return True
-    if OPS_REF_PREFIX in raw:
-        return True
-    return False
+    name = field_name.lower()
+    return any(s in name for s in SENSITIVE_FIELD_NAMES) or OPS_REF_PREFIX in raw
 
 
 def normalize_segment(segment: str) -> str:
@@ -190,18 +187,14 @@ class FieldValue:
         )
 
     def for_config(self) -> str | None:
-        """Value for hosts.conf. None if sensitive (excluded from config)."""
+        """Value for SSH config output. None if sensitive (excluded)."""
         if self.sensitive:
             return None
         return self.resolved
 
     def needs_resolution(self, cached: FieldValue | None) -> bool:
         """Check if this field needs resolution (original changed or no cache)."""
-        if cached is None:
-            return True
-        if self.original != cached.original:
-            return True
-        return False
+        return cached is None or self.original != cached.original
 
     def resolve(
         self,
@@ -212,8 +205,7 @@ class FieldValue:
         """Resolve references and return a new FieldValue with the result.
 
         Sensitive fields are NOT resolved here (they stay resolved=None).
-        Literals return themselves as resolved.
-        Templates are left unresolved (resolved at expansion time).
+        Literals and templates use their original value as resolved.
         References are resolved via resolve_chain().
 
         Uses op.read() for reference resolution (cache-aware).
@@ -221,19 +213,17 @@ class FieldValue:
         if self.sensitive:
             return self
 
-        if self.field_type == 'literal':
+        # Literals and templates both resolve to their original value.
+        # (Templates are substituted later during per-alias expansion.)
+        if self.field_type in ('literal', 'template'):
             return self.with_resolved(self.original)
 
-        if self.field_type == 'template':
-            # Templates are resolved during expansion, not here
-            return self.with_resolved(self.original)
-
-        # Reference type — resolve the chain
+        # Reference type — resolve the || chain
         result = resolve_chain(self.original, op, vault_id, item_id)
         return self.with_resolved(result)
 
     def to_hostdata(self) -> dict:
-        """Serialize for hostdata.json."""
+        """Serialize for the host data cache."""
         return {
             'original': self.original,
             'resolved': self.resolved,
@@ -242,7 +232,7 @@ class FieldValue:
 
     @classmethod
     def from_hostdata(cls, data: dict, field_name: str) -> FieldValue:
-        """Restore from hostdata.json."""
+        """Restore from host data cache."""
         original = data['original']
         return cls(
             original=original,

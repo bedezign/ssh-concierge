@@ -69,6 +69,11 @@ class TestIsSensitive:
         assert is_sensitive('anything', 'Password') is True
         assert is_sensitive('anything', 'TOKEN') is True
 
+    def test_substring_match(self):
+        assert is_sensitive('anything', 'sudo_password') is True
+        assert is_sensitive('anything', 'api_token') is True
+        assert is_sensitive('anything', 'my_secret_field') is True
+
     def test_ops_prefix(self):
         assert is_sensitive('ops://Vault/Item/field', 'hostname') is True
 

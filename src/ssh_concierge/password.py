@@ -65,8 +65,8 @@ def resolve_password(
 
     Supports:
       - None / empty → None
-      - Literal value (no op:// prefix) → returned as-is
-      - op://./field or op://./Section/field → expanded to full op:// ref, then read
+      - Literal value (no op:// or other :// prefix) → returned as-is
+      - op://./field → expanded to full op:// ref, then read
       - op://Vault/Item/field → read directly via `op read`
       - || fallback chains
 
@@ -75,11 +75,8 @@ def resolve_password(
     if not raw_password:
         return None
 
-    if not raw_password.startswith(OP_REF_PREFIX) and '://' not in raw_password:
+    if '://' not in raw_password:
         return raw_password
-
-    vault_id = item_meta.vault_id if item_meta else None
-    item_id = item_meta.item_id if item_meta else None
 
     if raw_password.startswith(OP_SELF_PREFIX) and item_meta is None:
         logger.warning(
@@ -88,6 +85,8 @@ def resolve_password(
         )
         return None
 
+    vault_id = item_meta.vault_id if item_meta else None
+    item_id = item_meta.item_id if item_meta else None
     return resolve_chain(raw_password, op, vault_id, item_id)
 
 

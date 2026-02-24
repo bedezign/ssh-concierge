@@ -42,23 +42,18 @@ class HostConfig:
 
     @property
     def config_port(self) -> str | None:
-        """Port value for hosts.conf (None if absent or sensitive)."""
+        """Port value for SSH config output (None if absent or sensitive)."""
         return self.port.for_config() if self.port else None
 
     @property
     def config_user(self) -> str | None:
-        """User value for hosts.conf (None if absent or sensitive)."""
+        """User value for SSH config output (None if absent or sensitive)."""
         return self.user.for_config() if self.user else None
 
     @property
     def config_extra(self) -> dict[str, str]:
-        """Extra directives for hosts.conf (excludes sensitive fields)."""
-        result: dict[str, str] = {}
-        for k, fv in self.extra_directives.items():
-            val = fv.for_config()
-            if val is not None:
-                result[k] = val
-        return result
+        """Extra directives for SSH config output (excludes sensitive fields)."""
+        return {k: val for k, fv in self.extra_directives.items() if (val := fv.for_config()) is not None}
 
     @property
     def host_pattern(self) -> str:
