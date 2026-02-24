@@ -746,13 +746,13 @@ class TestDirectiveValidation:
             "ForwardAgent": "yes",
         }
 
-    def test_invalid_directive_skips_host(self, capsys):
+    def test_unknown_field_stored_as_custom(self):
+        """Unknown fields are stored as custom_fields, not SSH directives."""
         item = self._make_item([{"label": "foobar", "value": "baz"}])
         hosts = parse_item_to_host_configs(item)
-        assert hosts == []
-        err = capsys.readouterr().err
-        assert 'unknown SSH directive "foobar"' in err
-        assert "Test Host" in err
+        assert len(hosts) == 1
+        assert hosts[0].extra_directives == {}
+        assert hosts[0].custom_fields == {"foobar": "baz"}
 
     def test_case_insensitive_valid(self):
         """Lowercase 'proxyjump' is accepted and normalized to canonical 'ProxyJump'."""
@@ -768,19 +768,19 @@ class TestDirectiveValidation:
         assert len(hosts) == 1
         assert hosts[0].extra_directives == {"ProxyJump": "bastion"}
 
-    def test_mixed_valid_and_invalid_skips_host(self, capsys):
-        """One invalid directive among valid ones causes the entire host to be skipped."""
+    def test_mixed_valid_and_custom_fields(self):
+        """Valid directives go to extra_directives, unknown go to custom_fields."""
         item = self._make_item([
             {"label": "ProxyJump", "value": "bastion"},
             {"label": "NotARealDirective", "value": "oops"},
         ])
         hosts = parse_item_to_host_configs(item)
-        assert hosts == []
-        err = capsys.readouterr().err
-        assert 'unknown SSH directive "NotARealDirective"' in err
+        assert len(hosts) == 1
+        assert hosts[0].extra_directives == {"ProxyJump": "bastion"}
+        assert hosts[0].custom_fields == {"NotARealDirective": "oops"}
 
-    def test_warning_includes_section_label(self, capsys):
-        """Warning message includes the section label for multi-section items."""
+    def test_custom_fields_in_multi_section(self):
+        """Custom fields in one section don't affect other sections."""
         item = {
             "id": "x",
             "title": "Multi Host",
@@ -803,24 +803,23 @@ class TestDirectiveValidation:
                 {
                     "id": "f3",
                     "label": "aliases",
-                    "value": "bad-host",
+                    "value": "other-host",
                     "section": {"id": "s2", "label": "SSH Config: staging"},
                 },
                 {
                     "id": "f4",
-                    "label": "typofield",
-                    "value": "oops",
+                    "label": "sudo_password",
+                    "value": "ops://./sudo_password",
                     "section": {"id": "s2", "label": "SSH Config: staging"},
                 },
             ],
         }
         hosts = parse_item_to_host_configs(item)
-        # Good section passes, bad section skipped
-        assert len(hosts) == 1
+        assert len(hosts) == 2
         assert hosts[0].aliases == ["good-host"]
-        err = capsys.readouterr().err
-        assert "SSH Config: staging" in err
-        assert 'typofield' in err
+        assert hosts[0].extra_directives == {"ProxyJump": "bastion"}
+        assert hosts[1].aliases == ["other-host"]
+        assert hosts[1].custom_fields == {"sudo_password": "ops://./sudo_password"}
 
     def test_existing_proxyjump_still_works(self):
         """Regression: the existing SAMPLE_ITEM_SINGLE_SECTION with ProxyJump still parses."""

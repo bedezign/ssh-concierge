@@ -45,6 +45,10 @@ ssh myserver   # connects to 203.0.113.42 as deploy, using the item's key
 - **Multiple hosts per key**: Add multiple `SSH Config: <name>` sections to one item
 - **Hosts without keys**: Tag any item `SSH Host` to manage password-auth hosts too
 - **Transparent password auth**: Add a `password` field with an `op://` reference — SSH/SCP connects without prompts
+- **`op://` references in any field**: Hostname, user, or any directive can reference 1Password values
+- **`||` fallback chains**: `op://./hostname||10.0.0.1` — try the reference, fall back to a literal
+- **Sensitive fields**: `ops://` prefix marks fields that should never be cached resolved on disk
+- **Cross-item key references**: Use a `key` field to share SSH keys across items
 - **Deploy keys**: `--deploy-key worker1 --all` installs pubkeys to hosts via `ssh-copy-id`
 - **Brace expansion**: `worker{1..8}` expands to `worker1` through `worker8`
 - **Regex substitution**: `s/pattern/replacement/` on any field — hostname, user, any directive

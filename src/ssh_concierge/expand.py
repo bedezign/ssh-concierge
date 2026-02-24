@@ -7,7 +7,7 @@ import re
 from ssh_concierge.models import HostConfig
 
 _BRACE_RE = re.compile(r'^(.*?)\{([^}]+)\}(.*)$')
-_ALIAS_PLACEHOLDER = '{alias}'
+_ALIAS_PLACEHOLDER = '{{alias}}'
 
 
 def expand_braces(pattern: str) -> list[str]:
@@ -44,12 +44,12 @@ def _is_regex(value: str | None) -> bool:
 
 
 def _has_alias(value: str | None) -> bool:
-    """Check if a value contains the {alias} placeholder."""
+    """Check if a value contains the {{alias}} placeholder."""
     return bool(value and _ALIAS_PLACEHOLDER in value)
 
 
 def _needs_per_alias_expansion(host: HostConfig) -> bool:
-    """Check if any field needs per-alias expansion (regex or {alias} template)."""
+    """Check if any field needs per-alias expansion (regex or {{alias}} template)."""
     for value in _iter_field_values(host):
         if _is_regex(value) or _has_alias(value):
             return True
@@ -68,7 +68,7 @@ def _resolve(value: str | None, alias: str) -> str | None:
 
     Supports:
       - s/pattern/replacement/ — regex substitution
-      - {alias} — simple placeholder interpolation
+      - {{alias}} — simple placeholder interpolation
       - anything else — returned as-is
     """
     if value is None:
@@ -84,10 +84,10 @@ def _resolve(value: str | None, alias: str) -> str | None:
 def expand_host_config(host: HostConfig) -> list[HostConfig]:
     """Expand a HostConfig into individual HostConfigs per alias.
 
-    Triggered when any field uses regex (s/.../.../} or {alias} placeholder.
+    Triggered when any field uses regex (s/.../.../} or {{alias}} placeholder.
     Each alias gets its own HostConfig with resolved values.
 
-    Fields without regex or {alias} are passed through unchanged.
+    Fields without regex or {{alias}} are passed through unchanged.
     """
     if not _needs_per_alias_expansion(host):
         return [host]

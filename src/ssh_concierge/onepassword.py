@@ -225,20 +225,19 @@ def parse_item_to_host_configs(item: dict[str, Any]) -> list[HostConfig]:
 
         extra_raw = {k: v for k, (_orig, v) in ssh_fields.items() if k not in _KNOWN_FIELDS}
 
-        invalid = [k for k in extra_raw if k not in _VALID_SSH_DIRECTIVES]
-        if invalid:
-            title = item.get('title', item.get('id', '?'))
-            for key in invalid:
-                orig = ssh_fields[key][0]
-                print(
-                    f'ssh-concierge: skipping "{title}" [{section_label}]: '
-                    f'unknown SSH directive "{orig}"',
-                    file=sys.stderr,
-                )
-            continue
+        # Separate valid SSH directives from custom data fields
+        valid_extra = {}
+        custom_fields = {}
+        for k, v in extra_raw.items():
+            if k in _VALID_SSH_DIRECTIVES:
+                valid_extra[k] = v
+            else:
+                # Preserve original label casing for custom fields
+                orig_label = ssh_fields[k][0]
+                custom_fields[orig_label] = v
 
         # Normalize to canonical SSH config casing
-        extra = {_VALID_SSH_DIRECTIVES[k]: v for k, v in extra_raw.items()}
+        extra = {_VALID_SSH_DIRECTIVES[k]: v for k, v in valid_extra.items()}
 
         def _val(key: str) -> str | None:
             entry = ssh_fields.get(key)
@@ -252,6 +251,7 @@ def parse_item_to_host_configs(item: dict[str, Any]) -> list[HostConfig]:
             public_key=public_key,
             fingerprint=fingerprint,
             extra_directives=extra,
+            custom_fields=custom_fields,
             section_label=section_label,
             password=_val('password'),
             clipboard=_val('clipboard'),

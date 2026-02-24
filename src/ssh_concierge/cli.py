@@ -129,13 +129,21 @@ def _build_hostdata_entry(
 
 
 def _get_host_field(host: HostConfig, name: str) -> str | None:
-    """Look up a HostConfig attribute by field name."""
-    return {
+    """Look up a HostConfig attribute by field name (case-insensitive)."""
+    result = {
         'password': host.password,
         'user': host.user,
         'port': host.port,
         'hostname': host.hostname,
-    }.get(name)
+    }.get(name.lower())
+    if result:
+        return result
+    # Case-insensitive lookup in custom fields
+    name_lower = name.lower()
+    for k, v in host.custom_fields.items():
+        if k.lower() == name_lower:
+            return v
+    return None
 
 
 def _load_cached_hostdata(runtime_dir: Path) -> dict[str, dict[str, FieldValue]]:

@@ -75,6 +75,7 @@ Add a section named **SSH Config** with these fields:
 | `user` | No | Login user. |
 | `password` | No | Password for auth. See [Password authentication](#password-authentication). |
 | `clipboard` | No | Template copied to clipboard on connect. See [Clipboard](#clipboard). |
+| `key` | No | Cross-item SSH key reference. See [Cross-item key references](#cross-item-key-references). |
 | Any SSH directive | No | Added verbatim. E.g., `ProxyJump`, `ForwardAgent`, `LocalForward`. |
 
 The item's public key is automatically dumped and referenced via `IdentityFile` + `IdentitiesOnly yes`.
@@ -192,38 +193,68 @@ Each generated block gets its own computed `HostName` but shares the same `User`
 
 Without regex on any field, all aliases share a single `Host` line (standard SSH behavior).
 
-## Password authentication
+## Field resolution
 
-Hosts that require password auth can store an `op://` reference in the `password` field. The SSH/SCP wrapper resolves it at connection time via `op read` and injects it via `SSH_ASKPASS`.
+Any field value (not just `password`) can contain `op://` references with optional `||` fallback chains.
 
-### Password field formats
+### Reference formats
 
 | Format | Example | Behavior |
 |--------|---------|----------|
 | `op://Vault/Item/field` | `op://Work/ServerLogin/password` | Used directly with `op read` |
 | `op://Vault/Item` | `op://Work/ServerLogin` | `/password` appended automatically |
-| `op://./field` | `op://./password` | Expanded using the current item's vault/item IDs |
-| Literal | `hunter2` | Stored as an `op://` reference back to the field (no plaintext on disk) |
+| `op://./field` | `op://./hostname` | Expanded using the current item's vault/item IDs |
+| `ops://...` | `ops://./password` | Same as `op://` but marks the field as **sensitive** |
+| `ref\|\|fallback` | `op://./hostname\|\|10.0.0.1` | Try reference first, fall back to literal |
+| Literal | `deploy` | Used as-is |
 
-**Recommended**: Use `op://Vault/Item/password` to reference a Login item's password, or `op://./password` to reference the current item's own password field.
+### `||` fallback chains
+
+Split on `||`, try each segment left-to-right. Each segment is either a reference (contains `://`) or a literal. First non-empty result wins.
+
+```
+op://./hostname||op://Vault/Backup/hostname||10.0.0.1
+```
+
+This tries three sources: the item's own hostname, a backup reference, then a hardcoded fallback.
+
+### Sensitivity
+
+A field is **sensitive** if:
+- Any segment in the `||` chain uses the `ops://` prefix (explicit marker), OR
+- The field name matches: `password`, `passwd`, `pass`, `secret`, `token`
+
+Sensitive fields are **never** stored resolved on disk. They're kept as raw `op://` references in `hostdata.json` and resolved at SSH connection time by the wrapper.
+
+Non-sensitive references are resolved at `--generate` time and cached in `hostdata.json`. This avoids `op read` calls on every SSH connection.
+
+### `ops://` prefix
+
+`ops://` is identical to `op://` for resolution (it's normalized to `op://` before calling `op read`) but marks the entire field as sensitive. Use it for any field whose resolved value should not touch disk — even non-password fields like a hostname you want to keep private.
+
+## Password authentication
+
+Hosts that require password auth can store an `op://` reference in the `password` field. The SSH/SCP wrapper resolves it at connection time via `op read` and injects it via `SSH_ASKPASS`.
+
+**Recommended**: Use `op://./password` to reference the current item's own password field, or `op://Vault/Item/password` for a cross-item reference.
 
 ### How it works
 
-1. `ssh-concierge --generate` builds `hostdata.json` mapping each alias to its `op://` references and optional clipboard template
+1. `ssh-concierge --generate` builds `hostdata.json` mapping each alias to its fields (with original references and cached resolved values for non-sensitive fields), plus optional clipboard template
 2. The `ssh`/`scp` wrapper parses your command to extract the target hostname
 3. It looks up the hostname in `hostdata.json`
-4. If found, it calls `op read` to resolve any `op://` references to actual values
+4. For each field, it uses the cached resolved value if available, or calls `op read` to resolve sensitive fields on the spot
 5. If a `clipboard` template is present, placeholders are resolved and the result is copied to the system clipboard
-6. If a `password` ref is present, it creates a temporary askpass script and sets `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`
+6. If a `password` is present, it creates a temporary askpass script and sets `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`
 7. SSH uses the askpass script instead of prompting interactively
 
 If any step fails (`op read` fails, 1Password is locked), the wrapper falls back to normal interactive auth.
 
 ### Security
 
-- `hostdata.json` contains only `op://` references — never plaintext passwords
+- Sensitive fields (passwords, `ops://` references) are **never** stored resolved in `hostdata.json`
+- Non-sensitive fields cache their resolved values for performance (avoids `op read` on every connection)
 - The askpass temp script is created with `0700` permissions and deleted after SSH exits
-- Passwords are resolved on demand; nothing is cached to disk
 
 ### Setup
 
@@ -281,10 +312,24 @@ A host can have a `clipboard` field without a `password` field. The template is 
 
 The wrapper uses `wl-copy` when `$WAYLAND_DISPLAY` is set, or `xclip -selection clipboard` when `$DISPLAY` is set. If neither is available (e.g., headless), a warning is printed to stderr and the connection proceeds normally.
 
+## Cross-item key references
+
+The `key` field lets a non-key item (tagged `SSH Host`) reference an SSH key from another 1Password item. This is useful when multiple items should use the same key but you don't want to add multiple sections to the key item.
+
+### Formats
+
+| Format | Example | Behavior |
+|--------|---------|----------|
+| Item name | `MyKey` | Searches all vaults for an SSH Key item with this name |
+| Vault/Item | `Work/MyKey` | Searches only the specified vault |
+
+The referenced item must be an SSH Key item that is also managed by ssh-concierge (has an "SSH Config" section). The generated Host block gets `IdentityFile` + `IdentitiesOnly` pointing to the referenced key.
+
 ## CLI commands
 
 ```bash
 ssh-concierge --generate              # Force regenerate from 1Password
+ssh-concierge --generate --no-cache   # Regenerate, force re-resolution of all references
 ssh-concierge --flush                  # Delete runtime config entirely
 ssh-concierge --list                   # List all managed Host entries
 ssh-concierge --status                 # Show config path, age, host count
@@ -309,7 +354,7 @@ Generated at `$XDG_RUNTIME_DIR/ssh-concierge/`:
 ```
 $XDG_RUNTIME_DIR/ssh-concierge/
 ├── hosts.conf              # SSH config fragment (the Include target)
-├── hostdata.json           # alias → {refs, clipboard} map
+├── hostdata.json           # alias → {fields, clipboard, key} map
 ├── keys/
 │   ├── SHA256:abc123.pub   # Public keys for IdentityFile
 │   └── SHA256:def456.pub
@@ -317,7 +362,7 @@ $XDG_RUNTIME_DIR/ssh-concierge/
 ```
 
 - `hosts.conf` is written atomically (temp file + rename) — no partial reads.
-- `hostdata.json` stores only `op://` references and clipboard templates — no plaintext passwords.
+- `hostdata.json` stores field data: original references, cached resolved values (for non-sensitive fields), and clipboard templates. Sensitive fields are never stored resolved.
 - Public keys get `0644` permissions.
 - The `.lock` file uses `fcntl.flock` so parallel SSH connections don't corrupt the config.
 
@@ -326,7 +371,12 @@ $XDG_RUNTIME_DIR/ssh-concierge/
 - **TTL**: 1 hour. The zsh entry point checks the mtime of `hosts.conf`.
 - **No background refresh**. The cache is populated on the first SSH connection after expiry.
 - **Manual refresh**: `ssh-concierge --generate` (after modifying items in 1Password).
+- **Force re-resolution**: `ssh-concierge --generate --no-cache` (when the referenced *value* in 1Password changed but the reference itself didn't).
 - **Clear cache**: `ssh-concierge --flush` (next SSH connection triggers a cold path).
+
+### Field caching
+
+Non-sensitive field values are cached in `hostdata.json` (original reference + resolved value). On subsequent `--generate` runs, if the original reference hasn't changed, the cached resolved value is reused without calling `op read`. Use `--no-cache` to force re-resolution of all fields.
 
 ## Coexistence with static config
 

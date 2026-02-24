@@ -141,13 +141,13 @@ class TestExpandHostConfig:
         assert result[0].extra_directives["ProxyJump"] == "bastion"
         assert result[1].extra_directives["LocalForward"] == "8080 server2.internal:80"
 
-    # --- {alias} placeholder ---
+    # --- {{alias}} placeholder ---
 
     def test_alias_in_user(self):
         host = HostConfig(
             aliases=["node01", "node02"],
             hostname="pam-gateway.example.com",
-            user="jdoe@pajdoe%corp.example.com@{alias}.example.com",
+            user="jdoe@pajdoe%corp.example.com@{{alias}}.example.com",
         )
         result = expand_host_config(host)
         assert len(result) == 2
@@ -159,7 +159,7 @@ class TestExpandHostConfig:
     def test_alias_in_hostname(self):
         host = HostConfig(
             aliases=["master1", "worker1"],
-            hostname="{alias}.cluster1.example.com",
+            hostname="{{alias}}.cluster1.example.com",
         )
         result = expand_host_config(host)
         assert result[0].hostname == "master1.cluster1.example.com"
@@ -169,7 +169,7 @@ class TestExpandHostConfig:
         host = HostConfig(
             aliases=["web1", "web2"],
             hostname="10.0.0.1",
-            extra_directives={"LocalForward": "8080 {alias}.internal:80"},
+            extra_directives={"LocalForward": "8080 {{alias}}.internal:80"},
         )
         result = expand_host_config(host)
         assert result[0].extra_directives["LocalForward"] == "8080 web1.internal:80"

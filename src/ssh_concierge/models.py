@@ -16,6 +16,7 @@ class HostConfig:
     public_key: str | None = None
     fingerprint: str | None = None
     extra_directives: dict[str, str] = field(default_factory=dict)
+    custom_fields: dict[str, str] = field(default_factory=dict)
     section_label: str | None = None
     password: str | None = None
     clipboard: str | None = None
