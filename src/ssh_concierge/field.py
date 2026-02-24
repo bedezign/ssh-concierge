@@ -118,6 +118,8 @@ def resolve_chain(
     op: OnePassword,
     vault_id: str | None = None,
     item_id: str | None = None,
+    *,
+    cache_only: bool = False,
 ) -> str | None:
     """Resolve a || fallback chain.
 
@@ -126,6 +128,7 @@ def resolve_chain(
     - Otherwise → literal (use as-is if non-empty)
 
     Uses op.read() for reference resolution (cache-aware).
+    If cache_only=True, only uses cached values (no CLI calls).
     Returns first non-empty result, or None if all fail.
     """
     segments = raw.split(CHAIN_SEPARATOR)
@@ -143,7 +146,7 @@ def resolve_chain(
                 ref = expand_self_ref(ref, vault_id, item_id)
             # Normalize incomplete references
             ref = normalize_incomplete_ref(ref)
-            result = op.read(ref)
+            result = op.read(ref, cache_only=cache_only)
             if result:
                 return result
         else:

@@ -194,15 +194,17 @@ class OnePassword:
                 else:
                     self._read_cache[f'{prefix}/{label}'.lower()] = value
 
-    def read(self, reference: str) -> str | None:
+    def read(self, reference: str, *, cache_only: bool = False) -> str | None:
         """Resolve an op:// reference. Cache hit first, then `op read`.
 
         Case-insensitive. Caches results for subsequent calls.
-        Returns None on failure.
+        Returns None on failure or if cache_only=True and the reference is not cached.
         """
         key = reference.lower()
         if key in self._read_cache:
             return self._read_cache[key]
+        if cache_only:
+            return None
         try:
             value = self._run(['read', reference]).strip()
             self._read_cache[key] = value

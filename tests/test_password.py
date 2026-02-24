@@ -60,14 +60,14 @@ class TestResolvePassword:
         meta = ItemMeta(vault_id='vault-abc', item_id='item-123')
         result = resolve_password('op://./password', op, meta)
         assert result == 'the-password'
-        op.read.assert_called_once_with('op://vault-abc/item-123/password')
+        op.read.assert_called_once_with('op://vault-abc/item-123/password', cache_only=False)
 
     def test_self_reference_with_section(self):
         op = _mock_op(return_value='pw')
         meta = ItemMeta(vault_id='v1', item_id='i1')
         result = resolve_password('op://./SSH Config/password', op, meta)
         assert result == 'pw'
-        op.read.assert_called_once_with('op://v1/i1/SSH Config/password')
+        op.read.assert_called_once_with('op://v1/i1/SSH Config/password', cache_only=False)
 
     def test_self_reference_without_meta_returns_none(self):
         op = _mock_op()
@@ -78,7 +78,7 @@ class TestResolvePassword:
         op = _mock_op(return_value='secret')
         result = resolve_password('ops://Vault/Item/password', op)
         assert result == 'secret'
-        op.read.assert_called_once_with('op://Vault/Item/password')
+        op.read.assert_called_once_with('op://Vault/Item/password', cache_only=False)
 
     def test_op_read_failure_returns_none(self):
         op = _mock_op(return_value=None)

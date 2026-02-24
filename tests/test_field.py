@@ -229,19 +229,19 @@ class TestResolveChain:
     def test_self_ref_expanded(self):
         op = _mock_op(return_value='pw')
         result = resolve_chain('op://./password', op, vault_id='v1', item_id='i1')
-        op.read.assert_called_once_with('op://v1/i1/password')
+        op.read.assert_called_once_with('op://v1/i1/password', cache_only=False)
         assert result == 'pw'
 
     def test_ops_normalized(self):
         op = _mock_op(return_value='secret')
         result = resolve_chain('ops://Vault/Item/field', op)
-        op.read.assert_called_once_with('op://Vault/Item/field')
+        op.read.assert_called_once_with('op://Vault/Item/field', cache_only=False)
         assert result == 'secret'
 
     def test_incomplete_ref_gets_password_appended(self):
         op = _mock_op(return_value='pw')
         resolve_chain('op://Vault/Item', op)
-        op.read.assert_called_once_with('op://Vault/Item/password')
+        op.read.assert_called_once_with('op://Vault/Item/password', cache_only=False)
 
 
 class TestFieldValue:

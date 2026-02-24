@@ -12,11 +12,13 @@ import pytest
 from ssh_concierge.cli import (
     cmd_generate, cmd_flush, cmd_status, cmd_list, cmd_debug, main,
     _parse_op_item_ref, _build_key_registry, _resolve_key_ref,
-    _load_cached_hostdata,
+    _load_cached_hostdata, resolve_host_fields,
 )
 from ssh_concierge.deploy import cmd_deploy_key
+from ssh_concierge.field import FieldValue
 from ssh_concierge.models import HostConfig
 from ssh_concierge.onepassword import OpError
+from ssh_concierge.password import ItemMeta
 
 
 @pytest.fixture()
@@ -548,3 +550,70 @@ class TestCmdDebugKeyRef:
 
         assert 'Key: op://Work/ProdKey' in output
         assert 'Password:' in output
+
+
+class TestResolveHostFieldsStaleness:
+    """Test that reference fields are re-resolved when the target value changes."""
+
+    def test_stale_reference_detected_via_cache_lookup(self):
+        """When original is unchanged but the target value changed, re-resolve."""
+        op = MagicMock()
+        # op.read with cache_only=True returns the fresh value (seeded from item)
+        # op.read without cache_only resolves the reference fully
+        def read_side_effect(ref, *, cache_only=False):
+            return 'new.example.com'
+        op.read.side_effect = read_side_effect
+
+        meta = ItemMeta(vault_id='v1', item_id='i1')
+        ref = 'op://v1/i1/SSH Config/website'
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname=FieldValue(original=ref, resolved=None, sensitive=False, field_type='reference'),
+        )
+        # Cached: same original, but old resolved value
+        cached_fields = {
+            'hostname': FieldValue(original=ref, resolved='old.example.com', sensitive=False, field_type='reference'),
+        }
+        result = resolve_host_fields(host, meta, cached_fields, op)
+        assert result.hostname.resolved == 'new.example.com'
+
+    def test_unchanged_reference_uses_cache(self):
+        """When original unchanged and target value unchanged, use cache."""
+        op = MagicMock()
+        def read_side_effect(ref, *, cache_only=False):
+            return 'same.example.com'
+        op.read.side_effect = read_side_effect
+
+        meta = ItemMeta(vault_id='v1', item_id='i1')
+        ref = 'op://v1/i1/SSH Config/website'
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname=FieldValue(original=ref, resolved=None, sensitive=False, field_type='reference'),
+        )
+        cached_fields = {
+            'hostname': FieldValue(original=ref, resolved='same.example.com', sensitive=False, field_type='reference'),
+        }
+        result = resolve_host_fields(host, meta, cached_fields, op)
+        assert result.hostname.resolved == 'same.example.com'
+
+    def test_unknown_reference_falls_back_to_cache(self):
+        """When cache_only returns None (not seeded), trust the original comparison."""
+        op = MagicMock()
+        def read_side_effect(ref, *, cache_only=False):
+            if cache_only:
+                return None  # Not in read cache
+            return 'resolved.example.com'
+        op.read.side_effect = read_side_effect
+
+        meta = ItemMeta(vault_id='v1', item_id='i1')
+        ref = 'op://OtherVault/OtherItem/hostname'
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname=FieldValue(original=ref, resolved=None, sensitive=False, field_type='reference'),
+        )
+        cached_fields = {
+            'hostname': FieldValue(original=ref, resolved='cached.example.com', sensitive=False, field_type='reference'),
+        }
+        result = resolve_host_fields(host, meta, cached_fields, op)
+        # Should use cached value since cache_only returned None
+        assert result.hostname.resolved == 'cached.example.com'

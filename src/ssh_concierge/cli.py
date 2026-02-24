@@ -17,7 +17,7 @@ from pathlib import Path
 from ssh_concierge.config import generate_runtime_config
 from ssh_concierge.deploy import cmd_deploy_key
 from ssh_concierge.expand import expand_host_config
-from ssh_concierge.field import FieldValue, normalize_original
+from ssh_concierge.field import FieldValue, normalize_original, resolve_chain
 from ssh_concierge.models import HostConfig
 from ssh_concierge.onepassword import OnePassword, parse_item_to_host_configs
 from ssh_concierge.password import ItemMeta
@@ -56,6 +56,12 @@ def resolve_host_fields(
 
         cached = cached_fields.get(name) if cached_fields and not no_cache else None
         if not fv.needs_resolution(cached):
+            # Original unchanged — but the target value may have changed.
+            # Check if the resolved value is still current (cache-only, no CLI calls).
+            if cached and cached.field_type == 'reference':  # type: ignore[union-attr]
+                fresh = resolve_chain(fv.original, op, cache_only=True)
+                if fresh is not None and fresh != cached.resolved:  # type: ignore[union-attr]
+                    return fv.resolve(op, vault_id=meta.vault_id, item_id=meta.item_id)
             return cached  # type: ignore[return-value]
 
         return fv.resolve(op, vault_id=meta.vault_id, item_id=meta.item_id)
