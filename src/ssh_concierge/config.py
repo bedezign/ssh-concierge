@@ -46,12 +46,12 @@ def generate_host_block(host: HostConfig, keys_dir: Path) -> str:
 def generate_runtime_config(
     hosts: list[HostConfig],
     runtime_dir: Path,
-    password_refs: dict[str, str] | None = None,
+    hostdata: dict[str, dict] | None = None,
 ) -> None:
-    """Generate the complete runtime config: hosts.conf + key files + passwords.json.
+    """Generate the complete runtime config: hosts.conf + key files + hostdata.json.
 
     Writes atomically via temp file + rename.
-    password_refs maps alias → op:// reference (never plaintext).
+    hostdata maps alias → {refs: {name: op://...}, clipboard: template}.
     """
     runtime_dir.mkdir(parents=True, exist_ok=True)
     keys_dir = runtime_dir / "keys"
@@ -74,13 +74,12 @@ def generate_runtime_config(
     conf_path = runtime_dir / "hosts.conf"
     _atomic_write(conf_path, content)
 
-    # Write passwords.json (op:// references only, never plaintext)
-    pw_path = runtime_dir / "passwords.json"
-    if password_refs:
-        _atomic_write(pw_path, json.dumps(password_refs, indent=2) + "\n")
-        pw_path.chmod(0o600)
-    elif pw_path.exists():
-        pw_path.unlink()
+    # Write hostdata.json (op:// references only, never plaintext)
+    hd_path = runtime_dir / "hostdata.json"
+    if hostdata:
+        _atomic_write(hd_path, json.dumps(hostdata, indent=2) + "\n")
+    elif hd_path.exists():
+        hd_path.unlink()
 
 
 def _atomic_write(path: Path, content: str) -> None:

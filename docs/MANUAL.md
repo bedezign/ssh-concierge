@@ -74,6 +74,7 @@ Add a section named **SSH Config** with these fields:
 | `port` | No | SSH port. |
 | `user` | No | Login user. |
 | `password` | No | Password for auth. See [Password authentication](#password-authentication). |
+| `clipboard` | No | Template copied to clipboard on connect. See [Clipboard](#clipboard). |
 | Any SSH directive | No | Added verbatim. E.g., `ProxyJump`, `ForwardAgent`, `LocalForward`. |
 
 The item's public key is automatically dumped and referenced via `IdentityFile` + `IdentitiesOnly yes`.
@@ -208,18 +209,19 @@ Hosts that require password auth can store an `op://` reference in the `password
 
 ### How it works
 
-1. `ssh-concierge --generate` builds `passwords.json` mapping each alias to its `op://` reference
+1. `ssh-concierge --generate` builds `hostdata.json` mapping each alias to its `op://` references and optional clipboard template
 2. The `ssh`/`scp` wrapper parses your command to extract the target hostname
-3. It looks up the hostname in `passwords.json`
-4. If found, it calls `op read` to resolve the `op://` reference to the actual password
-5. It creates a temporary askpass script and sets `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`
-6. SSH uses the askpass script instead of prompting interactively
+3. It looks up the hostname in `hostdata.json`
+4. If found, it calls `op read` to resolve any `op://` references to actual values
+5. If a `clipboard` template is present, placeholders are resolved and the result is copied to the system clipboard
+6. If a `password` ref is present, it creates a temporary askpass script and sets `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`
+7. SSH uses the askpass script instead of prompting interactively
 
-If any step fails (no entry in `passwords.json`, `op read` fails, 1Password is locked), the wrapper falls back to normal interactive auth.
+If any step fails (`op read` fails, 1Password is locked), the wrapper falls back to normal interactive auth.
 
 ### Security
 
-- `passwords.json` contains only `op://` references — never plaintext passwords
+- `hostdata.json` contains only `op://` references — never plaintext passwords
 - The askpass temp script is created with `0700` permissions and deleted after SSH exits
 - Passwords are resolved on demand; nothing is cached to disk
 
@@ -241,6 +243,43 @@ rm ~/.local/bin/ssh ~/.local/bin/scp
 ```
 
 SSH and SCP revert to `/usr/bin/ssh` and `/usr/bin/scp` immediately.
+
+## Clipboard
+
+The `clipboard` field lets you automatically copy a string to the system clipboard when connecting to a host. This is useful for passwords or commands you need to paste after connecting (e.g., `sudo -i` followed by a password).
+
+### Template syntax
+
+The value is a template string with two features:
+
+- **`{field_name}` placeholders** — replaced with the resolved value of another field from the same SSH Config section (e.g., `{password}`)
+- **`\n` newlines** — both literal `\n` (typed as two characters in a single-line 1Password field) and real newlines (from a multi-line 1Password field) become newlines in the clipboard output
+
+Unrecognized placeholders are left as-is.
+
+### Example
+
+```
+clipboard: sudo -i\n{password}\n
+password:  op://./password
+```
+
+When you `ssh myhost`, the clipboard contains:
+```
+sudo -i
+hunter2
+
+```
+
+Three lines: the `sudo -i` command, the resolved password, and a trailing newline. Paste into the terminal after connecting.
+
+### Clipboard without password
+
+A host can have a `clipboard` field without a `password` field. The template is resolved and copied, and SSH connects normally (no askpass injection).
+
+### Clipboard tool detection
+
+The wrapper uses `wl-copy` when `$WAYLAND_DISPLAY` is set, or `xclip -selection clipboard` when `$DISPLAY` is set. If neither is available (e.g., headless), a warning is printed to stderr and the connection proceeds normally.
 
 ## CLI commands
 
@@ -270,7 +309,7 @@ Generated at `$XDG_RUNTIME_DIR/ssh-concierge/`:
 ```
 $XDG_RUNTIME_DIR/ssh-concierge/
 ├── hosts.conf              # SSH config fragment (the Include target)
-├── passwords.json          # alias → op:// reference map (0600 permissions)
+├── hostdata.json           # alias → {refs, clipboard} map
 ├── keys/
 │   ├── SHA256:abc123.pub   # Public keys for IdentityFile
 │   └── SHA256:def456.pub
@@ -278,7 +317,7 @@ $XDG_RUNTIME_DIR/ssh-concierge/
 ```
 
 - `hosts.conf` is written atomically (temp file + rename) — no partial reads.
-- `passwords.json` stores only `op://` references, never plaintext passwords. Gets `0600` permissions.
+- `hostdata.json` stores only `op://` references and clipboard templates — no plaintext passwords.
 - Public keys get `0644` permissions.
 - The `.lock` file uses `fcntl.flock` so parallel SSH connections don't corrupt the config.
 

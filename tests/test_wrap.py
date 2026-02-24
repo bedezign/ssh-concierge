@@ -12,9 +12,12 @@ import pytest
 
 from ssh_concierge.wrap import (
     _run_with_askpass,
+    copy_to_clipboard,
     find_real_binary,
+    lookup_hostdata,
     lookup_reference,
     main,
+    resolve_clipboard,
     resolve_via_op_read,
 )
 
@@ -58,24 +61,129 @@ class TestFindRealBinary:
                 assert find_real_binary('ssh') is None
 
 
-class TestLookupReference:
+class TestLookupHostdata:
     def test_found(self, tmp_path: Path):
-        pw_file = tmp_path / 'passwords.json'
-        pw_file.write_text(json.dumps({'myhost': 'op://vault/item/password'}))
-        assert lookup_reference('myhost', pw_file) == 'op://vault/item/password'
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {'refs': {'password': 'op://vault/item/password'}},
+        }))
+        entry = lookup_hostdata('myhost', hd_file)
+        assert entry == {'refs': {'password': 'op://vault/item/password'}}
 
     def test_not_found(self, tmp_path: Path):
-        pw_file = tmp_path / 'passwords.json'
-        pw_file.write_text(json.dumps({'other': 'op://vault/item/password'}))
-        assert lookup_reference('myhost', pw_file) is None
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({'other': {'refs': {}}}))
+        assert lookup_hostdata('myhost', hd_file) is None
 
     def test_file_missing(self, tmp_path: Path):
-        assert lookup_reference('myhost', tmp_path / 'nope.json') is None
+        assert lookup_hostdata('myhost', tmp_path / 'nope.json') is None
 
     def test_bad_json(self, tmp_path: Path):
-        pw_file = tmp_path / 'passwords.json'
-        pw_file.write_text('not json')
-        assert lookup_reference('myhost', pw_file) is None
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text('not json')
+        assert lookup_hostdata('myhost', hd_file) is None
+
+    def test_with_clipboard(self, tmp_path: Path):
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'refs': {'password': 'op://v/i/pw'},
+                'clipboard': 'sudo -i\\n{password}\\n',
+            },
+        }))
+        entry = lookup_hostdata('myhost', hd_file)
+        assert entry['clipboard'] == 'sudo -i\\n{password}\\n'
+        assert entry['refs']['password'] == 'op://v/i/pw'
+
+
+class TestLookupReference:
+    """Compat wrapper tests."""
+
+    def test_found(self, tmp_path: Path):
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {'refs': {'password': 'op://vault/item/password'}},
+        }))
+        assert lookup_reference('myhost', hd_file) == 'op://vault/item/password'
+
+    def test_not_found(self, tmp_path: Path):
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({'other': {'refs': {}}}))
+        assert lookup_reference('myhost', hd_file) is None
+
+    def test_no_password_ref(self, tmp_path: Path):
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {'clipboard': 'hello'},
+        }))
+        assert lookup_reference('myhost', hd_file) is None
+
+
+class TestResolveClipboard:
+    def test_literal_backslash_n(self):
+        result = resolve_clipboard('sudo -i\\n{password}\\n', {'password': 'secret'})
+        assert result == 'sudo -i\nsecret\n'
+
+    def test_real_newlines_preserved(self):
+        result = resolve_clipboard('sudo -i\n{password}\n', {'password': 'secret'})
+        assert result == 'sudo -i\nsecret\n'
+
+    def test_mixed_newlines(self):
+        # Real newline + literal \n in same template
+        result = resolve_clipboard('line1\nline2\\nline3', {})
+        assert result == 'line1\nline2\nline3'
+
+    def test_unrecognized_placeholder_left_as_is(self):
+        result = resolve_clipboard('{unknown}', {})
+        assert result == '{unknown}'
+
+    def test_no_placeholders(self):
+        result = resolve_clipboard('just text\\n', {})
+        assert result == 'just text\n'
+
+    def test_multiple_placeholders(self):
+        result = resolve_clipboard('{user}\\n{password}', {'user': 'admin', 'password': 'pw'})
+        assert result == 'admin\npw'
+
+    def test_placeholder_used_twice(self):
+        result = resolve_clipboard('{pw}\\n{pw}', {'pw': 'x'})
+        assert result == 'x\nx'
+
+
+class TestCopyToClipboard:
+    @patch('ssh_concierge.wrap.subprocess.run')
+    def test_wayland(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        with patch.dict(os.environ, {'WAYLAND_DISPLAY': 'wayland-0'}):
+            assert copy_to_clipboard('test') is True
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ['wl-copy']
+        assert mock_run.call_args[1]['input'] == b'test'
+
+    @patch('ssh_concierge.wrap.subprocess.run')
+    def test_x11(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        with patch.dict(os.environ, {'DISPLAY': ':0'}, clear=False):
+            env = os.environ.copy()
+            env.pop('WAYLAND_DISPLAY', None)
+            with patch.dict(os.environ, env, clear=True):
+                assert copy_to_clipboard('test') is True
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ['xclip', '-selection', 'clipboard']
+
+    def test_no_display(self, capsys):
+        with patch.dict(os.environ, {}, clear=True):
+            assert copy_to_clipboard('test') is False
+        err = capsys.readouterr().err
+        assert 'no clipboard tool' in err.lower()
+
+    @patch('ssh_concierge.wrap.subprocess.run', side_effect=FileNotFoundError('wl-copy'))
+    def test_clipboard_tool_missing(self, mock_run, capsys):
+        with patch.dict(os.environ, {'WAYLAND_DISPLAY': 'wayland-0'}):
+            assert copy_to_clipboard('test') is False
+        err = capsys.readouterr().err
+        assert 'clipboard copy failed' in err.lower()
 
 
 class TestResolveViaOpRead:
@@ -120,7 +228,7 @@ class TestRunWithAskpass:
 class TestMain:
     @patch('ssh_concierge.wrap.os.execv')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
-    def test_no_password_falls_through(self, mock_find, mock_execv, tmp_path: Path):
+    def test_no_hostdata_falls_through(self, mock_find, mock_execv, tmp_path: Path):
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
             with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
                 main()
@@ -130,8 +238,10 @@ class TestMain:
     @patch('ssh_concierge.wrap.resolve_via_op_read', return_value='secret123')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
     def test_with_password(self, mock_find, mock_resolve, mock_run, tmp_path: Path):
-        pw_file = tmp_path / 'passwords.json'
-        pw_file.write_text(json.dumps({'myhost': 'op://v/i/pw'}))
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {'refs': {'password': 'op://v/i/pw'}},
+        }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
             with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
@@ -153,8 +263,10 @@ class TestMain:
     @patch('ssh_concierge.wrap.resolve_via_op_read', return_value=None)
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
     def test_op_read_fails_falls_through(self, mock_find, mock_resolve, mock_execv, tmp_path: Path):
-        pw_file = tmp_path / 'passwords.json'
-        pw_file.write_text(json.dumps({'myhost': 'op://v/i/pw'}))
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {'refs': {'password': 'op://v/i/pw'}},
+        }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
             with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
@@ -176,3 +288,43 @@ class TestMain:
             with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
                 main()
         mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh'])
+
+    @patch('ssh_concierge.wrap.copy_to_clipboard', return_value=True)
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_clipboard_only(self, mock_find, mock_execv, mock_clip, tmp_path: Path):
+        """Host with clipboard but no password — clipboard copied, then exec."""
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {'clipboard': 'hello\\nworld'},
+        }))
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+                main()
+
+        mock_clip.assert_called_once_with('hello\nworld')
+        mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh', 'myhost'])
+
+    @patch('ssh_concierge.wrap.copy_to_clipboard', return_value=True)
+    @patch('ssh_concierge.wrap._run_with_askpass', return_value=0)
+    @patch('ssh_concierge.wrap.resolve_via_op_read', return_value='secret')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_password_and_clipboard(self, mock_find, mock_resolve, mock_run, mock_clip, tmp_path: Path):
+        """Host with both password and clipboard."""
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'refs': {'password': 'op://v/i/pw'},
+                'clipboard': 'sudo -i\\n{password}\\n',
+            },
+        }))
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+                with pytest.raises(SystemExit) as exc_info:
+                    main()
+                assert exc_info.value.code == 0
+
+        mock_clip.assert_called_once_with('sudo -i\nsecret\n')
+        mock_run.assert_called_once_with('/usr/bin/ssh', 'ssh', ['myhost'], 'secret')

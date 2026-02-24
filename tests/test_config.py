@@ -181,46 +181,49 @@ class TestGenerateRuntimeConfig:
         assert "Host a" in content
         assert "Host b" in content
 
-    def test_passwords_json_written(self, tmp_path: Path):
+    def test_hostdata_json_written(self, tmp_path: Path):
         hosts = [HostConfig(aliases=["myhost"], hostname="10.0.0.1")]
-        refs = {"myhost": "op://vault/item/password"}
-        generate_runtime_config(hosts, runtime_dir=tmp_path, password_refs=refs)
+        hd = {"myhost": {"refs": {"password": "op://vault/item/password"}}}
+        generate_runtime_config(hosts, runtime_dir=tmp_path, hostdata=hd)
 
-        pw_path = tmp_path / "passwords.json"
-        assert pw_path.exists()
-        data = json.loads(pw_path.read_text())
-        assert data == {"myhost": "op://vault/item/password"}
+        hd_path = tmp_path / "hostdata.json"
+        assert hd_path.exists()
+        data = json.loads(hd_path.read_text())
+        assert data == hd
 
-    def test_passwords_json_permissions(self, tmp_path: Path):
-        hosts = [HostConfig(aliases=["h"], hostname="10.0.0.1")]
-        refs = {"h": "op://v/i/pw"}
-        generate_runtime_config(hosts, runtime_dir=tmp_path, password_refs=refs)
-
-        pw_path = tmp_path / "passwords.json"
-        mode = stat.S_IMODE(pw_path.stat().st_mode)
-        assert mode == 0o600
-
-    def test_passwords_json_not_written_without_refs(self, tmp_path: Path):
+    def test_hostdata_json_not_written_without_data(self, tmp_path: Path):
         hosts = [HostConfig(aliases=["h"], hostname="10.0.0.1")]
         generate_runtime_config(hosts, runtime_dir=tmp_path)
-        assert not (tmp_path / "passwords.json").exists()
+        assert not (tmp_path / "hostdata.json").exists()
 
-    def test_passwords_json_removed_when_no_refs(self, tmp_path: Path):
+    def test_hostdata_json_removed_when_empty(self, tmp_path: Path):
         hosts = [HostConfig(aliases=["h"], hostname="10.0.0.1")]
-        # First create with refs
-        generate_runtime_config(hosts, tmp_path, password_refs={"h": "op://v/i/pw"})
-        assert (tmp_path / "passwords.json").exists()
-        # Then regenerate without refs
+        hd = {"h": {"refs": {"password": "op://v/i/pw"}}}
+        generate_runtime_config(hosts, tmp_path, hostdata=hd)
+        assert (tmp_path / "hostdata.json").exists()
+        # Regenerate without hostdata
         generate_runtime_config(hosts, tmp_path)
-        assert not (tmp_path / "passwords.json").exists()
+        assert not (tmp_path / "hostdata.json").exists()
 
-    def test_passwords_json_multiple_aliases(self, tmp_path: Path):
-        hosts = [HostConfig(aliases=["a", "b"], hostname="10.0.0.1")]
-        refs = {
-            "a": "op://v/i/SSH Config/password",
-            "b": "op://v/i/SSH Config/password",
+    def test_hostdata_json_with_clipboard(self, tmp_path: Path):
+        hosts = [HostConfig(aliases=["h"], hostname="10.0.0.1")]
+        hd = {
+            "h": {
+                "refs": {"password": "op://v/i/pw"},
+                "clipboard": "sudo -i\\n{password}\\n",
+            },
         }
-        generate_runtime_config(hosts, runtime_dir=tmp_path, password_refs=refs)
+        generate_runtime_config(hosts, runtime_dir=tmp_path, hostdata=hd)
 
-        data = json.loads((tmp_path / "passwords.json").read_text())
+        data = json.loads((tmp_path / "hostdata.json").read_text())
+        assert data["h"]["clipboard"] == "sudo -i\\n{password}\\n"
+        assert data["h"]["refs"]["password"] == "op://v/i/pw"
+
+    def test_hostdata_json_multiple_aliases(self, tmp_path: Path):
+        hosts = [HostConfig(aliases=["a", "b"], hostname="10.0.0.1")]
+        entry = {"refs": {"password": "op://v/i/SSH Config/password"}}
+        hd = {"a": entry, "b": entry}
+        generate_runtime_config(hosts, runtime_dir=tmp_path, hostdata=hd)
+
+        data = json.loads((tmp_path / "hostdata.json").read_text())
         assert data["a"] == data["b"]

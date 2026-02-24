@@ -625,6 +625,60 @@ class TestParseItemToHostConfigs:
         hosts = parse_item_to_host_configs(SAMPLE_ITEM_MINIMAL)
         assert hosts[0].password is None
 
+    def test_clipboard_extracted(self):
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SSH_KEY",
+            "fields": [
+                {"id": "pk", "label": "public key", "value": "ssh-ed25519 AAAA"},
+                {"id": "fp", "label": "fingerprint", "value": "SHA256:x"},
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "myhost",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "clipboard",
+                    "value": "sudo -i\\n{password}\\n",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert hosts[0].clipboard == "sudo -i\\n{password}\\n"
+
+    def test_clipboard_not_in_extra_directives(self):
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SSH_KEY",
+            "fields": [
+                {"id": "pk", "label": "public key", "value": "ssh-ed25519 AAAA"},
+                {"id": "fp", "label": "fingerprint", "value": "SHA256:x"},
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "myhost",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "clipboard",
+                    "value": "some template",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert "clipboard" not in hosts[0].extra_directives
+
+    def test_no_clipboard_field(self):
+        hosts = parse_item_to_host_configs(SAMPLE_ITEM_MINIMAL)
+        assert hosts[0].clipboard is None
+
     def test_brace_expansion_in_aliases(self):
         item = {
             "id": "x",

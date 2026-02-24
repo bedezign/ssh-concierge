@@ -18,6 +18,7 @@ class HostConfig:
     extra_directives: dict[str, str] = field(default_factory=dict)
     section_label: str | None = None
     password: str | None = None
+    clipboard: str | None = None
 
     @property
     def effective_hostname(self) -> str:

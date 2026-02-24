@@ -12,7 +12,7 @@ from ssh_concierge.expand import expand_braces
 from ssh_concierge.models import HostConfig
 
 # Fields from the "SSH Config" section that map to HostConfig attributes directly
-_KNOWN_FIELDS = {'aliases', 'alias', 'hostname', 'host', 'port', 'user', 'username', 'password'}
+_KNOWN_FIELDS = {'aliases', 'alias', 'hostname', 'host', 'port', 'user', 'username', 'password', 'clipboard'}
 
 # Valid SSH client config keywords (from man ssh_config, OpenSSH 8.x-9.x).
 # Maps lowercase → canonical casing. User input is normalized to the canonical form.
@@ -254,6 +254,7 @@ def parse_item_to_host_configs(item: dict[str, Any]) -> list[HostConfig]:
             extra_directives=extra,
             section_label=section_label,
             password=_val('password'),
+            clipboard=_val('clipboard'),
         ))
 
     return hosts
