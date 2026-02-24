@@ -35,7 +35,6 @@ def generate_host_block(host: HostConfig, keys_dir: Path) -> str:
     if host.public_key and host.fingerprint:
         key_path = keys_dir / f"{_safe_filename(host.fingerprint)}.pub"
         lines.append(f"    IdentityFile {key_path}")
-        lines.append("    IdentitiesOnly yes")
 
     for directive, value in sorted(host.config_extra.items()):
         lines.append(f"    {directive} {_escape_percent(value)}")

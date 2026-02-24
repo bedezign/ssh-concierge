@@ -39,7 +39,7 @@ class TestGenerateHostBlock:
         assert "    Port 2222\n" in block
         assert "    User deploy\n" in block
         assert "    IdentityFile /run/user/1000/ssh-concierge/keys/SHA256:abc123.pub\n" in block
-        assert "    IdentitiesOnly yes\n" in block
+        assert "IdentitiesOnly" not in block
 
     def test_hostname_defaults_to_first_alias(self):
         host = HostConfig(aliases=["bastion.example.com", "bastion"])

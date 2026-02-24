@@ -382,22 +382,36 @@ def cmd_debug(alias: str, runtime_dir: Path) -> None:
 
     entry = lookup_hostdata(alias, runtime_dir / 'hostdata.json')
     if entry:
+        # Key reference
         key = entry.get('key')
+        has_identity = any('IdentityFile' in line for line in block_lines)
         if key:
-            print(f'    # Key: {key}')
+            if has_identity:
+                print(f'    # Key: {key}')
+            else:
+                print(f'    # Key: {key}  ⚠ NOT RESOLVED (no IdentityFile generated)')
 
+        # All fields with resolution status
         fields = entry.get('fields', {})
-        # Show password info
-        pw_field = fields.get('password', {})
-        if pw_field:
-            print(f'    # Password: {pw_field.get("original", "?")}')
+        if fields:
+            print('    # Fields:')
+            for name, fdata in fields.items():
+                original = fdata.get('original', '?')
+                resolved = fdata.get('resolved')
+                sensitive = fdata.get('sensitive', False)
+                if sensitive:
+                    print(f'    #   {name}: {original}  (sensitive, resolved at SSH time)')
+                elif resolved is not None and resolved != original:
+                    print(f'    #   {name}: {original} → {resolved}')
+                elif resolved is not None:
+                    print(f'    #   {name}: {original}')
+                else:
+                    print(f'    #   {name}: {original}  ⚠ UNRESOLVED')
 
+        # Clipboard
         clipboard = entry.get('clipboard')
         if clipboard:
             print(f'    # Clipboard: {clipboard!r}')
-            for name, fdata in fields.items():
-                if name != 'password':
-                    print(f'    #   {name}: {fdata.get("original", "?")}')
 
         # Legacy format support
         refs = entry.get('refs', {})

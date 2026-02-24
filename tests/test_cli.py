@@ -148,12 +148,10 @@ SAMPLE_HOSTS_CONF = (
     "    Port 2222\n"
     "    User deploy\n"
     "    IdentityFile /run/user/1000/ssh-concierge/keys/SHA256:abc123.pub\n"
-    "    IdentitiesOnly yes\n"
     "    ProxyJump bastion\n\n"
     "Host bastion\n"
     "    HostName 10.0.0.254\n"
     "    IdentityFile /run/user/1000/ssh-concierge/keys/SHA256:bastionkey.pub\n"
-    "    IdentitiesOnly yes\n"
 )
 
 SAMPLE_HOSTDATA = {
@@ -245,7 +243,8 @@ class TestCmdDebug:
         cmd_debug("prod", runtime_dir)
         output = capsys.readouterr().out
 
-        assert "Password:" in output
+        assert "password:" in output
+        assert "sensitive, resolved at SSH time" in output
         assert "Clipboard:" in output
 
     def test_config_age_shown(self, runtime_dir: Path, capsys):
@@ -549,7 +548,48 @@ class TestCmdDebugKeyRef:
         output = capsys.readouterr().out
 
         assert 'Key: op://Work/ProdKey' in output
-        assert 'Password:' in output
+        assert 'NOT RESOLVED' not in output  # IdentityFile present in block
+        assert 'password:' in output
+
+    def test_key_ref_warns_when_not_resolved(self, runtime_dir: Path, capsys):
+        runtime_dir.mkdir(parents=True)
+        # Host block without IdentityFile — key resolution failed
+        conf = "# Generated\n\nHost myhost\n    HostName 10.0.0.1\n    User root\n"
+        (runtime_dir / 'hosts.conf').write_text(conf)
+        hd = {
+            'myhost': {
+                'key': 'op://Personal/MyKey',
+                'fields': {},
+            },
+        }
+        (runtime_dir / 'hostdata.json').write_text(json.dumps(hd))
+
+        cmd_debug('myhost', runtime_dir)
+        output = capsys.readouterr().out
+
+        assert 'Key: op://Personal/MyKey' in output
+        assert 'NOT RESOLVED' in output
+
+    def test_field_resolution_status(self, runtime_dir: Path, capsys):
+        runtime_dir.mkdir(parents=True)
+        conf = "# Generated\n\nHost myhost\n    HostName new.example.com\n"
+        (runtime_dir / 'hosts.conf').write_text(conf)
+        hd = {
+            'myhost': {
+                'fields': {
+                    'hostname': {'original': 'op://v1/i1/website', 'resolved': 'new.example.com', 'sensitive': False},
+                    'password': {'original': 'ops://v1/i1/SSH Config/password', 'resolved': None, 'sensitive': True},
+                },
+            },
+        }
+        (runtime_dir / 'hostdata.json').write_text(json.dumps(hd))
+
+        cmd_debug('myhost', runtime_dir)
+        output = capsys.readouterr().out
+
+        assert 'hostname: op://v1/i1/website' in output
+        assert 'new.example.com' in output
+        assert 'sensitive, resolved at SSH time' in output
 
 
 class TestResolveHostFieldsStaleness:

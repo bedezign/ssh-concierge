@@ -13,7 +13,7 @@ readonly TTL=3600  # 1 hour
 
 # --generate / --flush / --list / --status: delegate to Python immediately
 case "$1" in
-    --generate|--flush|--list|--status|--deploy-key|--help|-h)
+    --generate|--flush|--list|--status|--debug|--deploy-key|--help|-h)
         ssh-concierge-py "$@"
         exit $?
         ;;
