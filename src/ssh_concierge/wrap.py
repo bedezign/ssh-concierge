@@ -12,6 +12,7 @@ from typing import Any
 
 from ssh_concierge.argparse_ssh import extract_scp_host, extract_ssh_host
 from ssh_concierge.field import resolve_chain
+from ssh_concierge.onepassword import OnePassword
 from ssh_concierge.password import askpass_env
 
 logger = logging.getLogger(__name__)
@@ -68,22 +69,11 @@ def lookup_reference(host: str, hostdata_path: Path) -> str | None:
     return None
 
 
-def resolve_via_op_read(reference: str) -> str | None:
-    """Resolve an op:// reference to a plaintext value via `op read`."""
-    from ssh_concierge.onepassword import OpError, _run_op
-
-    try:
-        return _run_op(['read', reference]).strip()
-    except OpError as exc:
-        print(f'ssh-concierge: op read failed: {exc}', file=sys.stderr)
-        return None
-
-
 def _resolve_fields(entry: dict) -> dict[str, str] | None:
     """Resolve all fields from a hostdata entry.
 
     For fields with resolved values (non-sensitive, cached), use them directly.
-    For fields without resolved values (sensitive), resolve via resolve_chain().
+    For fields without resolved values (sensitive), resolve via OnePassword.
     Returns resolved dict or None on critical failure.
     """
     fields = entry.get('fields', {})
@@ -91,6 +81,7 @@ def _resolve_fields(entry: dict) -> dict[str, str] | None:
         # Legacy format fallback
         return _resolve_refs(entry.get('refs', {}))
 
+    op = OnePassword()  # Empty cache, will call op read as needed
     resolved: dict[str, str] = {}
     for name, fdata in fields.items():
         if fdata.get('resolved') is not None:
@@ -99,7 +90,7 @@ def _resolve_fields(entry: dict) -> dict[str, str] | None:
         else:
             # Needs resolution at SSH time (sensitive)
             original = fdata.get('original', '')
-            result = resolve_chain(original)
+            result = resolve_chain(original, op)
             if result is None:
                 # Password failure is critical — fall through to normal auth
                 if name == 'password':
@@ -114,10 +105,11 @@ def _resolve_refs(refs: dict[str, str]) -> dict[str, str] | None:
     """Resolve all refs (legacy format), returning resolved dict or None on any op:// failure."""
     if not refs:
         return {}
+    op = OnePassword()
     resolved: dict[str, str] = {}
     for name, value in refs.items():
         if value.startswith('op://'):
-            result = resolve_via_op_read(value)
+            result = op.read(value)
             if result is None:
                 return None
             resolved[name] = result

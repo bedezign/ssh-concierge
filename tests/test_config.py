@@ -6,6 +6,8 @@ import stat
 import textwrap
 from pathlib import Path
 
+from tests.conftest import fv
+
 import pytest
 
 from ssh_concierge.config import generate_host_block, generate_runtime_config
@@ -14,7 +16,7 @@ from ssh_concierge.models import HostConfig
 
 class TestGenerateHostBlock:
     def test_minimal_host(self):
-        host = HostConfig(aliases=["myserver"], hostname="10.0.0.1")
+        host = HostConfig(aliases=["myserver"], hostname=fv("10.0.0.1", "hostname"))
         block = generate_host_block(host, keys_dir=Path("/run/user/1000/ssh-concierge/keys"))
         expected = textwrap.dedent("""\
             Host myserver
@@ -25,9 +27,9 @@ class TestGenerateHostBlock:
     def test_full_host(self):
         host = HostConfig(
             aliases=["prod", "prod-web-01"],
-            hostname="203.0.113.42",
-            port="2222",
-            user="deploy",
+            hostname=fv("203.0.113.42", "hostname"),
+            port=fv("2222", "port"),
+            user=fv("deploy", "user"),
             public_key="ssh-ed25519 AAAAC3... comment",
             fingerprint="SHA256:abc123",
         )
@@ -47,8 +49,11 @@ class TestGenerateHostBlock:
     def test_extra_directives(self):
         host = HostConfig(
             aliases=["jump"],
-            hostname="10.0.0.1",
-            extra_directives={"ProxyJump": "bastion", "ForwardAgent": "yes"},
+            hostname=fv("10.0.0.1", "hostname"),
+            extra_directives={
+                "ProxyJump": fv("bastion", "ProxyJump"),
+                "ForwardAgent": fv("yes", "ForwardAgent"),
+            },
         )
         block = generate_host_block(host, keys_dir=Path("/keys"))
         assert "    ProxyJump bastion\n" in block
@@ -57,8 +62,8 @@ class TestGenerateHostBlock:
     def test_percent_escaped_in_user(self):
         host = HostConfig(
             aliases=["server1"],
-            hostname="pam-gateway.example.com",
-            user="jdoe@pajdoe%corp.example.com@server1.example.com",
+            hostname=fv("pam-gateway.example.com", "hostname"),
+            user=fv("jdoe@pajdoe%corp.example.com@server1.example.com", "user"),
         )
         block = generate_host_block(host, keys_dir=Path("/keys"))
         assert "    User jdoe@pajdoe%%corp.example.com@server1.example.com\n" in block
@@ -66,19 +71,19 @@ class TestGenerateHostBlock:
     def test_percent_escaped_in_extra_directives(self):
         host = HostConfig(
             aliases=["test"],
-            hostname="10.0.0.1",
-            extra_directives={"RemoteCommand": "echo %done"},
+            hostname=fv("10.0.0.1", "hostname"),
+            extra_directives={"RemoteCommand": fv("echo %done", "RemoteCommand")},
         )
         block = generate_host_block(host, keys_dir=Path("/keys"))
         assert "    RemoteCommand echo %%done\n" in block
 
     def test_percent_not_escaped_in_hostname(self):
-        host = HostConfig(aliases=["master1"], hostname="%h.cluster1.example.com")
+        host = HostConfig(aliases=["master1"], hostname=fv("%h.cluster1.example.com", "hostname"))
         block = generate_host_block(host, keys_dir=Path("/keys"))
         assert "    HostName %h.cluster1.example.com\n" in block
 
     def test_no_identity_without_public_key(self):
-        host = HostConfig(aliases=["test"], hostname="10.0.0.1")
+        host = HostConfig(aliases=["test"], hostname=fv("10.0.0.1", "hostname"))
         block = generate_host_block(host, keys_dir=Path("/keys"))
         assert "IdentityFile" not in block
         assert "IdentitiesOnly" not in block
@@ -87,8 +92,8 @@ class TestGenerateHostBlock:
 class TestGenerateRuntimeConfig:
     def test_creates_hosts_conf(self, tmp_path: Path):
         hosts = [
-            HostConfig(aliases=["server1"], hostname="10.0.0.1"),
-            HostConfig(aliases=["server2"], hostname="10.0.0.2", user="admin"),
+            HostConfig(aliases=["server1"], hostname=fv("10.0.0.1", "hostname")),
+            HostConfig(aliases=["server2"], hostname=fv("10.0.0.2", "hostname"), user=fv("admin", "user")),
         ]
         generate_runtime_config(hosts, runtime_dir=tmp_path)
 
@@ -103,7 +108,7 @@ class TestGenerateRuntimeConfig:
         hosts = [
             HostConfig(
                 aliases=["keyed"],
-                hostname="10.0.0.1",
+                hostname=fv("10.0.0.1", "hostname"),
                 public_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample comment",
                 fingerprint="SHA256:xyzzy",
             ),
@@ -118,7 +123,7 @@ class TestGenerateRuntimeConfig:
         hosts = [
             HostConfig(
                 aliases=["keyed"],
-                hostname="10.0.0.1",
+                hostname=fv("10.0.0.1", "hostname"),
                 public_key="ssh-ed25519 AAAA... comment",
                 fingerprint="SHA256:abc",
             ),
@@ -138,15 +143,14 @@ class TestGenerateRuntimeConfig:
 
     def test_atomic_write(self, tmp_path: Path):
         """Config file should appear atomically (no partial writes visible)."""
-        hosts = [HostConfig(aliases=["test"], hostname="10.0.0.1")]
+        hosts = [HostConfig(aliases=["test"], hostname=fv("10.0.0.1", "hostname"))]
 
         # Write initial config
         generate_runtime_config(hosts, runtime_dir=tmp_path)
         conf = tmp_path / "hosts.conf"
-        initial_content = conf.read_text()
 
         # Overwrite — should be atomic
-        hosts2 = [HostConfig(aliases=["other"], hostname="10.0.0.2")]
+        hosts2 = [HostConfig(aliases=["other"], hostname=fv("10.0.0.2", "hostname"))]
         generate_runtime_config(hosts2, runtime_dir=tmp_path)
         new_content = conf.read_text()
 
@@ -161,13 +165,13 @@ class TestGenerateRuntimeConfig:
         hosts = [
             HostConfig(
                 aliases=["a"],
-                hostname="10.0.0.1",
+                hostname=fv("10.0.0.1", "hostname"),
                 public_key="ssh-rsa AAAAkey1 c1",
                 fingerprint="SHA256:key1",
             ),
             HostConfig(
                 aliases=["b"],
-                hostname="10.0.0.2",
+                hostname=fv("10.0.0.2", "hostname"),
                 public_key="ssh-ed25519 AAAAkey2 c2",
                 fingerprint="SHA256:key2",
             ),
@@ -182,7 +186,7 @@ class TestGenerateRuntimeConfig:
         assert "Host b" in content
 
     def test_hostdata_json_written(self, tmp_path: Path):
-        hosts = [HostConfig(aliases=["myhost"], hostname="10.0.0.1")]
+        hosts = [HostConfig(aliases=["myhost"], hostname=fv("10.0.0.1", "hostname"))]
         hd = {"myhost": {"refs": {"password": "op://vault/item/password"}}}
         generate_runtime_config(hosts, runtime_dir=tmp_path, hostdata=hd)
 
@@ -192,12 +196,12 @@ class TestGenerateRuntimeConfig:
         assert data == hd
 
     def test_hostdata_json_not_written_without_data(self, tmp_path: Path):
-        hosts = [HostConfig(aliases=["h"], hostname="10.0.0.1")]
+        hosts = [HostConfig(aliases=["h"], hostname=fv("10.0.0.1", "hostname"))]
         generate_runtime_config(hosts, runtime_dir=tmp_path)
         assert not (tmp_path / "hostdata.json").exists()
 
     def test_hostdata_json_removed_when_empty(self, tmp_path: Path):
-        hosts = [HostConfig(aliases=["h"], hostname="10.0.0.1")]
+        hosts = [HostConfig(aliases=["h"], hostname=fv("10.0.0.1", "hostname"))]
         hd = {"h": {"refs": {"password": "op://v/i/pw"}}}
         generate_runtime_config(hosts, tmp_path, hostdata=hd)
         assert (tmp_path / "hostdata.json").exists()
@@ -206,7 +210,7 @@ class TestGenerateRuntimeConfig:
         assert not (tmp_path / "hostdata.json").exists()
 
     def test_hostdata_json_with_clipboard(self, tmp_path: Path):
-        hosts = [HostConfig(aliases=["h"], hostname="10.0.0.1")]
+        hosts = [HostConfig(aliases=["h"], hostname=fv("10.0.0.1", "hostname"))]
         hd = {
             "h": {
                 "refs": {"password": "op://v/i/pw"},
@@ -220,7 +224,7 @@ class TestGenerateRuntimeConfig:
         assert data["h"]["refs"]["password"] == "op://v/i/pw"
 
     def test_hostdata_json_multiple_aliases(self, tmp_path: Path):
-        hosts = [HostConfig(aliases=["a", "b"], hostname="10.0.0.1")]
+        hosts = [HostConfig(aliases=["a", "b"], hostname=fv("10.0.0.1", "hostname"))]
         entry = {"refs": {"password": "op://v/i/SSH Config/password"}}
         hd = {"a": entry, "b": entry}
         generate_runtime_config(hosts, runtime_dir=tmp_path, hostdata=hd)

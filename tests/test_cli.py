@@ -5,12 +5,14 @@ import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+from tests.conftest import fv
+
 import pytest
 
 from ssh_concierge.cli import (
     cmd_generate, cmd_flush, cmd_status, cmd_list, cmd_debug, main,
     _parse_op_item_ref, _build_key_registry, _resolve_key_ref,
-    _load_cached_hostdata, _build_op_read_cache,
+    _load_cached_hostdata,
 )
 from ssh_concierge.deploy import cmd_deploy_key
 from ssh_concierge.models import HostConfig
@@ -26,15 +28,15 @@ def runtime_dir(tmp_path: Path) -> Path:
 SAMPLE_HOSTS = [
     HostConfig(
         aliases=["prod", "prod-web"],
-        hostname="10.0.0.1",
-        port="22",
-        user="deploy",
+        hostname=fv("10.0.0.1", "hostname"),
+        port=fv("22", "port"),
+        user=fv("deploy", "user"),
         public_key="ssh-ed25519 AAAAprod prod-key",
         fingerprint="SHA256:prodkey",
     ),
     HostConfig(
         aliases=["bastion"],
-        hostname="10.0.0.254",
+        hostname=fv("10.0.0.254", "hostname"),
         public_key="ssh-rsa AAAAbastion bastion-key",
         fingerprint="SHA256:bastionkey",
     ),
@@ -42,16 +44,18 @@ SAMPLE_HOSTS = [
 
 
 class TestCmdGenerate:
-    @patch("ssh_concierge.cli.onepassword")
-    def test_generates_config(self, mock_op, runtime_dir: Path):
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_generates_config(self, mock_op_cls, runtime_dir: Path):
+        mock_op = mock_op_cls.return_value
         mock_op.list_managed_item_ids.return_value = ["id1", "id2"]
         mock_op.get_item.side_effect = [
-            {"id": "id1", "fields": _make_item_fields(SAMPLE_HOSTS[0])},
-            {"id": "id2", "fields": _make_item_fields(SAMPLE_HOSTS[1])},
+            {"id": "id1", "vault": {"id": "v1"}, "fields": []},
+            {"id": "id2", "vault": {"id": "v2"}, "fields": []},
         ]
-        mock_op.parse_item_to_host_configs.side_effect = [[SAMPLE_HOSTS[0]], [SAMPLE_HOSTS[1]]]
 
-        cmd_generate(runtime_dir)
+        with patch("ssh_concierge.cli.parse_item_to_host_configs") as mock_parse:
+            mock_parse.side_effect = [[SAMPLE_HOSTS[0]], [SAMPLE_HOSTS[1]]]
+            cmd_generate(runtime_dir)
 
         conf = runtime_dir / "hosts.conf"
         assert conf.exists()
@@ -59,21 +63,24 @@ class TestCmdGenerate:
         assert "Host prod prod-web" in content
         assert "Host bastion" in content
 
-    @patch("ssh_concierge.cli.onepassword")
-    def test_skips_unparseable_items(self, mock_op, runtime_dir: Path):
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_skips_unparseable_items(self, mock_op_cls, runtime_dir: Path):
+        mock_op = mock_op_cls.return_value
         mock_op.list_managed_item_ids.return_value = ["id1"]
-        mock_op.get_item.return_value = {"id": "id1", "fields": []}
-        mock_op.parse_item_to_host_configs.return_value = []
+        mock_op.get_item.return_value = {"id": "id1", "vault": {"id": "v1"}, "fields": []}
 
-        cmd_generate(runtime_dir)
+        with patch("ssh_concierge.cli.parse_item_to_host_configs") as mock_parse:
+            mock_parse.return_value = []
+            cmd_generate(runtime_dir)
 
         conf = runtime_dir / "hosts.conf"
         assert conf.exists()
         # Only header, no Host blocks
         assert "Host " not in conf.read_text()
 
-    @patch("ssh_concierge.cli.onepassword")
-    def test_op_error_raises(self, mock_op, runtime_dir: Path):
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_op_error_raises(self, mock_op_cls, runtime_dir: Path):
+        mock_op = mock_op_cls.return_value
         mock_op.list_managed_item_ids.side_effect = OpError("not signed in")
         with pytest.raises(OpError):
             cmd_generate(runtime_dir)
@@ -318,29 +325,6 @@ class TestMain:
                 main()
 
 
-def _make_item_fields(host: HostConfig) -> list[dict]:
-    """Helper to create op item fields dict from a HostConfig."""
-    fields = []
-    if host.public_key:
-        fields.append({"id": "public_key", "label": "public key", "value": host.public_key})
-    if host.fingerprint:
-        fields.append({"id": "fingerprint", "label": "fingerprint", "value": host.fingerprint})
-    fields.append({
-        "id": "aliases",
-        "label": "aliases",
-        "value": ", ".join(host.aliases),
-        "section": {"id": "sshconfig", "label": "SSH Config"},
-    })
-    if host.hostname:
-        fields.append({
-            "id": "hostname",
-            "label": "hostname",
-            "value": host.hostname,
-            "section": {"id": "sshconfig", "label": "SSH Config"},
-        })
-    return fields
-
-
 class TestLoadCachedHostdata:
     def test_no_file(self, runtime_dir: Path):
         assert _load_cached_hostdata(runtime_dir) == {}
@@ -380,91 +364,6 @@ class TestLoadCachedHostdata:
         runtime_dir.mkdir(parents=True)
         (runtime_dir / 'hostdata.json').write_text('not json')
         assert _load_cached_hostdata(runtime_dir) == {}
-
-
-class TestBuildOpReadCache:
-    def test_indexes_item_level_fields(self):
-        items = [
-            {
-                'id': 'item1',
-                'vault': {'id': 'vault1'},
-                'fields': [
-                    {'label': 'public key', 'value': 'ssh-ed25519 AAAA'},
-                    {'label': 'fingerprint', 'value': 'SHA256:abc'},
-                ],
-            },
-        ]
-        cache = _build_op_read_cache(items)
-        assert cache['op://vault1/item1/public key'] == 'ssh-ed25519 AAAA'
-        assert cache['op://vault1/item1/fingerprint'] == 'SHA256:abc'
-
-    def test_indexes_section_fields(self):
-        items = [
-            {
-                'id': 'item1',
-                'vault': {'id': 'vault1'},
-                'fields': [
-                    {
-                        'label': 'password',
-                        'value': 'secret123',
-                        'section': {'id': 's1', 'label': 'SSH Config'},
-                    },
-                    {
-                        'label': 'hostname',
-                        'value': '10.0.0.1',
-                        'section': {'id': 's1', 'label': 'SSH Config'},
-                    },
-                ],
-            },
-        ]
-        cache = _build_op_read_cache(items)
-        assert cache['op://vault1/item1/ssh config/password'] == 'secret123'
-        assert cache['op://vault1/item1/ssh config/hostname'] == '10.0.0.1'
-
-    def test_keys_are_lowercased(self):
-        items = [
-            {
-                'id': 'item1',
-                'vault': {'id': 'vault1'},
-                'fields': [
-                    {'label': 'URL', 'value': 'workbench1.example.com'},
-                ],
-            },
-        ]
-        cache = _build_op_read_cache(items)
-        assert cache['op://vault1/item1/url'] == 'workbench1.example.com'
-        assert 'op://vault1/item1/URL' not in cache
-
-    def test_skips_empty_values(self):
-        items = [
-            {
-                'id': 'item1',
-                'vault': {'id': 'vault1'},
-                'fields': [
-                    {'label': 'empty', 'value': ''},
-                ],
-            },
-        ]
-        cache = _build_op_read_cache(items)
-        assert len(cache) == 0
-
-    def test_multiple_items(self):
-        items = [
-            {
-                'id': 'i1', 'vault': {'id': 'v1'},
-                'fields': [{'label': 'password', 'value': 'pw1', 'section': {'id': 's', 'label': 'SSH Config'}}],
-            },
-            {
-                'id': 'i2', 'vault': {'id': 'v2'},
-                'fields': [{'label': 'password', 'value': 'pw2', 'section': {'id': 's', 'label': 'SSH Config'}}],
-            },
-        ]
-        cache = _build_op_read_cache(items)
-        assert cache['op://v1/i1/ssh config/password'] == 'pw1'
-        assert cache['op://v2/i2/ssh config/password'] == 'pw2'
-
-    def test_empty_items(self):
-        assert _build_op_read_cache([]) == {}
 
 
 class TestParseOpItemRef:
@@ -571,7 +470,7 @@ class TestResolveKeyRef:
     def test_resolves_key_ref(self):
         host = HostConfig(
             aliases=['myhost'],
-            hostname='10.0.0.1',
+            hostname=fv('10.0.0.1', 'hostname'),
             key_ref='op://Work/My SSH Key',
         )
         result = _resolve_key_ref(host, self._registry())
@@ -583,7 +482,7 @@ class TestResolveKeyRef:
         """key_ref is ignored when host already has a public_key."""
         host = HostConfig(
             aliases=['myhost'],
-            hostname='10.0.0.1',
+            hostname=fv('10.0.0.1', 'hostname'),
             public_key='ssh-rsa existing',
             fingerprint='SHA256:existing',
             key_ref='op://Work/My SSH Key',
@@ -593,14 +492,14 @@ class TestResolveKeyRef:
         assert result.fingerprint == 'SHA256:existing'
 
     def test_no_key_ref(self):
-        host = HostConfig(aliases=['myhost'], hostname='10.0.0.1')
+        host = HostConfig(aliases=['myhost'], hostname=fv('10.0.0.1', 'hostname'))
         result = _resolve_key_ref(host, self._registry())
         assert result is host  # unchanged
 
     def test_key_not_found(self, capsys):
         host = HostConfig(
             aliases=['myhost'],
-            hostname='10.0.0.1',
+            hostname=fv('10.0.0.1', 'hostname'),
             key_ref='op://Work/Nonexistent',
         )
         result = _resolve_key_ref(host, self._registry())
@@ -612,7 +511,7 @@ class TestResolveKeyRef:
     def test_invalid_ref(self, capsys):
         host = HostConfig(
             aliases=['myhost'],
-            hostname='10.0.0.1',
+            hostname=fv('10.0.0.1', 'hostname'),
             key_ref='not-a-valid-ref',
         )
         result = _resolve_key_ref(host, self._registry())
@@ -623,7 +522,7 @@ class TestResolveKeyRef:
     def test_case_insensitive_lookup(self):
         host = HostConfig(
             aliases=['myhost'],
-            hostname='10.0.0.1',
+            hostname=fv('10.0.0.1', 'hostname'),
             key_ref='op://WORK/MY SSH KEY',
         )
         result = _resolve_key_ref(host, self._registry())

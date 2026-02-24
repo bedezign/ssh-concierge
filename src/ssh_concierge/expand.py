@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from ssh_concierge.models import HostConfig
+
+if TYPE_CHECKING:
+    from ssh_concierge.field import FieldValue
 
 _BRACE_RE = re.compile(r'^(.*?)\{([^}]+)\}(.*)$')
 _ALIAS_PLACEHOLDER = '{{alias}}'
@@ -57,28 +61,37 @@ def _needs_per_alias_expansion(host: HostConfig) -> bool:
 
 
 def _iter_field_values(host: HostConfig):
-    """Yield all expandable field values from a HostConfig."""
-    yield host.hostname
-    yield host.user
-    yield from host.extra_directives.values()
+    """Yield all expandable raw field values from a HostConfig."""
+    if host.hostname:
+        yield host.hostname.raw
+    if host.user:
+        yield host.user.raw
+    for fv in host.extra_directives.values():
+        yield fv.raw
 
 
-def _resolve(value: str | None, alias: str) -> str | None:
-    """Resolve a field value for a given alias.
+def _resolve_fv(fv: FieldValue | None, alias: str) -> FieldValue | None:
+    """Resolve a FieldValue for a given alias.
 
     Supports:
-      - s/pattern/replacement/ — regex substitution
-      - {{alias}} — simple placeholder interpolation
+      - s/pattern/replacement/ — regex substitution on the raw value
+      - {{alias}} — simple placeholder interpolation on the raw value
       - anything else — returned as-is
     """
-    if value is None:
+    if fv is None:
         return None
-    if _is_regex(value):
-        parts = value.split('/')
-        return re.sub(parts[1], parts[2], alias)
-    if _has_alias(value):
-        return value.replace(_ALIAS_PLACEHOLDER, alias)
-    return value
+
+    from ssh_concierge.field import FieldValue as FV, classify_type
+
+    raw = fv.raw
+    if _is_regex(raw):
+        parts = raw.split('/')
+        new_val = re.sub(parts[1], parts[2], alias)
+        return FV(original=new_val, resolved=None, sensitive=fv.sensitive, field_type='literal')
+    if _has_alias(raw):
+        new_val = raw.replace(_ALIAS_PLACEHOLDER, alias)
+        return FV(original=new_val, resolved=None, sensitive=fv.sensitive, field_type=classify_type(new_val))
+    return fv
 
 
 def expand_host_config(host: HostConfig) -> list[HostConfig]:
@@ -96,15 +109,16 @@ def expand_host_config(host: HostConfig) -> list[HostConfig]:
     for alias in host.aliases:
         result.append(HostConfig(
             aliases=[alias],
-            hostname=_resolve(host.hostname, alias),
+            hostname=_resolve_fv(host.hostname, alias),
             port=host.port,
-            user=_resolve(host.user, alias),
+            user=_resolve_fv(host.user, alias),
             public_key=host.public_key,
             fingerprint=host.fingerprint,
             extra_directives={
-                k: _resolve(v, alias) or v
-                for k, v in host.extra_directives.items()
+                k: _resolve_fv(fv, alias) or fv
+                for k, fv in host.extra_directives.items()
             },
+            custom_fields=host.custom_fields,
             section_label=host.section_label,
             password=host.password,
             clipboard=host.clipboard,

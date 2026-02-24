@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -170,126 +170,80 @@ class TestNormalizeOriginal:
         assert result == 'ops://v1/i1/secret||ops://v1/i1/backup_secret'
 
 
-class TestResolveSingle:
-    @patch('ssh_concierge.onepassword._run_op')
-    def test_cache_hit_skips_op_read(self, mock_run_op):
-        from ssh_concierge.field import resolve_single
-
-        cache = {'op://v1/i1/password': 'cached-pw'}
-        result = resolve_single('op://v1/i1/password', op_read_cache=cache)
-        assert result == 'cached-pw'
-        mock_run_op.assert_not_called()
-
-    @patch('ssh_concierge.onepassword._run_op')
-    def test_cache_hit_case_insensitive(self, mock_run_op):
-        from ssh_concierge.field import resolve_single
-
-        cache = {'op://v1/i1/url': 'workbench1.example.com'}
-        result = resolve_single('op://v1/i1/URL', op_read_cache=cache)
-        assert result == 'workbench1.example.com'
-        mock_run_op.assert_not_called()
-
-    @patch('ssh_concierge.onepassword._run_op')
-    def test_cache_miss_calls_op_read(self, mock_run_op):
-        from ssh_concierge.field import resolve_single
-
-        mock_run_op.return_value = 'op-result\n'
-        cache = {'op://v1/i1/other': 'something'}
-        result = resolve_single('op://v1/i1/password', op_read_cache=cache)
-        assert result == 'op-result'
-        mock_run_op.assert_called_once()
-
-    @patch('ssh_concierge.onepassword._run_op')
-    def test_no_cache_calls_op_read(self, mock_run_op):
-        from ssh_concierge.field import resolve_single
-
-        mock_run_op.return_value = 'result\n'
-        result = resolve_single('op://v1/i1/password')
-        assert result == 'result'
-        mock_run_op.assert_called_once()
+def _mock_op(**kwargs) -> MagicMock:
+    """Create a mock OnePassword instance."""
+    op = MagicMock()
+    op.read = MagicMock(**kwargs)
+    return op
 
 
 class TestResolveChain:
-    @patch('ssh_concierge.field.resolve_single')
-    def test_single_reference_success(self, mock_resolve):
-        mock_resolve.return_value = 'resolved-value'
-        result = resolve_chain('op://Vault/Item/field')
+    def test_single_reference_success(self):
+        op = _mock_op(return_value='resolved-value')
+        result = resolve_chain('op://Vault/Item/field', op)
         assert result == 'resolved-value'
 
-    @patch('ssh_concierge.field.resolve_single')
-    def test_single_reference_failure_returns_none(self, mock_resolve):
-        mock_resolve.return_value = None
-        result = resolve_chain('op://Vault/Item/field')
+    def test_single_reference_failure_returns_none(self):
+        op = _mock_op(return_value=None)
+        result = resolve_chain('op://Vault/Item/field', op)
         assert result is None
 
     def test_literal_value(self):
-        result = resolve_chain('10.0.0.1')
+        op = _mock_op()
+        result = resolve_chain('10.0.0.1', op)
+        assert result == '10.0.0.1'
+        op.read.assert_not_called()
+
+    def test_fallback_to_literal(self):
+        op = _mock_op(return_value=None)
+        result = resolve_chain('op://Vault/Item/field||10.0.0.1', op)
         assert result == '10.0.0.1'
 
-    @patch('ssh_concierge.field.resolve_single')
-    def test_fallback_to_literal(self, mock_resolve):
-        mock_resolve.return_value = None
-        result = resolve_chain('op://Vault/Item/field||10.0.0.1')
-        assert result == '10.0.0.1'
-
-    @patch('ssh_concierge.field.resolve_single')
-    def test_fallback_chain_first_wins(self, mock_resolve):
-        mock_resolve.return_value = 'first-value'
-        result = resolve_chain('op://Vault/Item/field||fallback')
+    def test_fallback_chain_first_wins(self):
+        op = _mock_op(return_value='first-value')
+        result = resolve_chain('op://Vault/Item/field||fallback', op)
         assert result == 'first-value'
-        mock_resolve.assert_called_once()
+        op.read.assert_called_once()
 
-    @patch('ssh_concierge.field.resolve_single')
-    def test_fallback_chain_second_ref(self, mock_resolve):
-        mock_resolve.side_effect = [None, 'backup-value']
-        result = resolve_chain('op://Vault/Item/field||op://Vault/Backup/field')
+    def test_fallback_chain_second_ref(self):
+        op = _mock_op(side_effect=[None, 'backup-value'])
+        result = resolve_chain('op://Vault/Item/field||op://Vault/Backup/field', op)
         assert result == 'backup-value'
-        assert mock_resolve.call_count == 2
+        assert op.read.call_count == 2
 
-    @patch('ssh_concierge.field.resolve_single')
-    def test_all_segments_fail(self, mock_resolve):
-        mock_resolve.return_value = None
-        result = resolve_chain('op://V/I/f1||op://V/I/f2')
+    def test_all_segments_fail(self):
+        op = _mock_op(return_value=None)
+        result = resolve_chain('op://V/I/f1||op://V/I/f2', op)
         assert result is None
 
-    @patch('ssh_concierge.field.resolve_single')
-    def test_empty_segments_skipped(self, mock_resolve):
-        mock_resolve.return_value = None
-        result = resolve_chain('op://V/I/f||  ||fallback')
+    def test_empty_segments_skipped(self):
+        op = _mock_op(return_value=None)
+        result = resolve_chain('op://V/I/f||  ||fallback', op)
         assert result == 'fallback'
 
-    @patch('ssh_concierge.field.resolve_single')
-    def test_self_ref_expanded(self, mock_resolve):
-        mock_resolve.return_value = 'pw'
-        result = resolve_chain('op://./password', vault_id='v1', item_id='i1')
-        mock_resolve.assert_called_once_with('op://v1/i1/password', None)
+    def test_self_ref_expanded(self):
+        op = _mock_op(return_value='pw')
+        result = resolve_chain('op://./password', op, vault_id='v1', item_id='i1')
+        op.read.assert_called_once_with('op://v1/i1/password')
         assert result == 'pw'
 
-    @patch('ssh_concierge.field.resolve_single')
-    def test_ops_normalized(self, mock_resolve):
-        mock_resolve.return_value = 'secret'
-        result = resolve_chain('ops://Vault/Item/field')
-        mock_resolve.assert_called_once_with('op://Vault/Item/field', None)
+    def test_ops_normalized(self):
+        op = _mock_op(return_value='secret')
+        result = resolve_chain('ops://Vault/Item/field', op)
+        op.read.assert_called_once_with('op://Vault/Item/field')
         assert result == 'secret'
 
-    @patch('ssh_concierge.field.resolve_single')
-    def test_incomplete_ref_gets_password_appended(self, mock_resolve):
-        mock_resolve.return_value = 'pw'
-        result = resolve_chain('op://Vault/Item')
-        mock_resolve.assert_called_once_with('op://Vault/Item/password', None)
-
-    @patch('ssh_concierge.field.resolve_single')
-    def test_passes_cache_to_resolve_single(self, mock_resolve):
-        mock_resolve.return_value = 'value'
-        cache = {'op://V/I/field': 'cached'}
-        result = resolve_chain('op://V/I/field', op_read_cache=cache)
-        mock_resolve.assert_called_once_with('op://V/I/field', cache)
+    def test_incomplete_ref_gets_password_appended(self):
+        op = _mock_op(return_value='pw')
+        resolve_chain('op://Vault/Item', op)
+        op.read.assert_called_once_with('op://Vault/Item/password')
 
 
 class TestFieldValue:
     def test_from_raw_literal(self):
         fv = FieldValue.from_raw('10.0.0.1', 'hostname')
         assert fv.original == '10.0.0.1'
+        assert fv.raw == '10.0.0.1'
         assert fv.resolved is None
         assert fv.sensitive is False
         assert fv.field_type == 'literal'
@@ -318,6 +272,18 @@ class TestFieldValue:
         assert fv2.resolved == '10.0.0.1'
         assert fv2.original == '10.0.0.1'
 
+    def test_for_config_non_sensitive(self):
+        fv = FieldValue(original='op://V/I/f', resolved='10.0.0.1', sensitive=False, field_type='reference')
+        assert fv.for_config() == '10.0.0.1'
+
+    def test_for_config_sensitive_returns_none(self):
+        fv = FieldValue(original='ops://V/I/pw', resolved=None, sensitive=True, field_type='reference')
+        assert fv.for_config() is None
+
+    def test_for_config_unresolved_returns_none(self):
+        fv = FieldValue(original='op://V/I/f', resolved=None, sensitive=False, field_type='reference')
+        assert fv.for_config() is None
+
     def test_needs_resolution_no_cache(self):
         fv = FieldValue.from_raw('op://V/I/f', 'hostname')
         assert fv.needs_resolution(None) is True
@@ -332,27 +298,30 @@ class TestFieldValue:
         cached = FieldValue(original='op://V/I/f', resolved='10.0.0.1', sensitive=False, field_type='reference')
         assert fv.needs_resolution(cached) is True
 
-    @patch('ssh_concierge.field.resolve_chain')
-    def test_resolve_reference(self, mock_chain):
-        mock_chain.return_value = '10.0.0.1'
+    def test_resolve_reference(self):
+        op = _mock_op(return_value='10.0.0.1')
         fv = FieldValue.from_raw('op://V/I/hostname', 'hostname')
-        resolved = fv.resolve(vault_id='v', item_id='i')
+        resolved = fv.resolve(op, vault_id='v', item_id='i')
         assert resolved.resolved == '10.0.0.1'
-        mock_chain.assert_called_once_with('op://V/I/hostname', 'v', 'i', None)
 
     def test_resolve_literal(self):
+        op = _mock_op()
         fv = FieldValue.from_raw('10.0.0.1', 'hostname')
-        resolved = fv.resolve()
+        resolved = fv.resolve(op)
         assert resolved.resolved == '10.0.0.1'
+        op.read.assert_not_called()
 
     def test_resolve_sensitive_stays_none(self):
+        op = _mock_op()
         fv = FieldValue.from_raw('ops://V/I/password', 'password')
-        resolved = fv.resolve(vault_id='v', item_id='i')
+        resolved = fv.resolve(op, vault_id='v', item_id='i')
         assert resolved.resolved is None
+        op.read.assert_not_called()
 
     def test_resolve_template(self):
+        op = _mock_op()
         fv = FieldValue.from_raw('{{alias}}.example.com', 'hostname')
-        resolved = fv.resolve()
+        resolved = fv.resolve(op)
         assert resolved.resolved == '{{alias}}.example.com'
 
     def test_to_hostdata(self):

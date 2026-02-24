@@ -27,17 +27,17 @@ def generate_host_block(host: HostConfig, keys_dir: Path) -> str:
     lines = [f"Host {host.host_pattern}"]
     lines.append(f"    HostName {host.effective_hostname}")
 
-    if host.port:
-        lines.append(f"    Port {host.port}")
-    if host.user:
-        lines.append(f"    User {_escape_percent(host.user)}")
+    if host.config_port:
+        lines.append(f"    Port {host.config_port}")
+    if host.config_user:
+        lines.append(f"    User {_escape_percent(host.config_user)}")
 
     if host.public_key and host.fingerprint:
         key_path = keys_dir / f"{_safe_filename(host.fingerprint)}.pub"
         lines.append(f"    IdentityFile {key_path}")
         lines.append("    IdentitiesOnly yes")
 
-    for directive, value in sorted(host.extra_directives.items()):
+    for directive, value in sorted(host.config_extra.items()):
         lines.append(f"    {directive} {_escape_percent(value)}")
 
     return "\n".join(lines) + "\n"
@@ -51,7 +51,7 @@ def generate_runtime_config(
     """Generate the complete runtime config: hosts.conf + key files + hostdata.json.
 
     Writes atomically via temp file + rename.
-    hostdata maps alias → {refs: {name: op://...}, clipboard: template}.
+    hostdata maps alias → {fields: {name: {original, resolved, sensitive}}, clipboard, key}.
     """
     runtime_dir.mkdir(parents=True, exist_ok=True)
     keys_dir = runtime_dir / "keys"

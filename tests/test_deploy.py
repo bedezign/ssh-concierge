@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from tests.conftest import fv
+
 import pytest
 
 from ssh_concierge.deploy import (
@@ -14,6 +16,7 @@ from ssh_concierge.deploy import (
     find_siblings,
     resolve_host,
 )
+from ssh_concierge.field import FieldValue
 from ssh_concierge.models import HostConfig
 from ssh_concierge.password import ItemMeta
 
@@ -34,13 +37,13 @@ def _host(
 ) -> HostConfig:
     return HostConfig(
         aliases=aliases,
-        hostname=hostname,
-        port=port,
-        user=user,
+        hostname=fv(hostname, 'hostname') if hostname else None,
+        port=fv(port, 'port') if port else None,
+        user=fv(user, 'user') if user else None,
         public_key=public_key,
         fingerprint=fingerprint,
         section_label=section_label,
-        password=password,
+        password=fv(password, 'password') if password else None,
     )
 
 

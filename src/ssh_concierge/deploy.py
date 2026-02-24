@@ -7,23 +7,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ssh_concierge import onepassword
 from ssh_concierge.config import _safe_filename
 from ssh_concierge.expand import expand_host_config
 from ssh_concierge.models import HostConfig
+from ssh_concierge.onepassword import OnePassword, parse_item_to_host_configs
 from ssh_concierge.password import ItemMeta, askpass_env, resolve_password
 
 
-def fetch_all_hosts() -> list[tuple[HostConfig, ItemMeta]]:
+def fetch_all_hosts(op: OnePassword) -> list[tuple[HostConfig, ItemMeta]]:
     """Query 1Password and return all expanded HostConfigs with item metadata."""
     results: list[tuple[HostConfig, ItemMeta]] = []
-    for item_id in onepassword.list_managed_item_ids():
-        item = onepassword.get_item(item_id)
+    for item_id in op.list_managed_item_ids():
+        item = op.get_item(item_id)
         meta = ItemMeta(
             vault_id=item.get('vault', {}).get('id', ''),
             item_id=item.get('id', ''),
         )
-        for host in onepassword.parse_item_to_host_configs(item):
+        for host in parse_item_to_host_configs(item):
             for expanded in expand_host_config(host):
                 results.append((expanded, meta))
     return results
@@ -62,10 +62,10 @@ def _build_ssh_copy_id_args(host: HostConfig, key_path: Path) -> list[str]:
     """Build the ssh-copy-id command arguments for a host."""
     args = ['ssh-copy-id', '-i', str(key_path)]
     if host.port:
-        args.extend(['-p', host.port])
+        args.extend(['-p', host.port.raw])
     target = host.aliases[0]
     if host.user:
-        target = f'{host.user}@{target}'
+        target = f'{host.user.raw}@{target}'
     args.append(target)
     return args
 
@@ -127,7 +127,8 @@ def _ensure_key_file(host: HostConfig, runtime_dir: Path) -> Path | None:
 
 def cmd_deploy_key(alias: str, all_siblings: bool, runtime_dir: Path) -> None:
     """Deploy SSH key to a host (and optionally its siblings)."""
-    hosts = fetch_all_hosts()
+    op = OnePassword()
+    hosts = fetch_all_hosts(op)
 
     match = resolve_host(alias, hosts)
     if match is None:
@@ -141,7 +142,8 @@ def cmd_deploy_key(alias: str, all_siblings: bool, runtime_dir: Path) -> None:
         sys.exit(1)
 
     # Resolve password once for all targets (siblings share the same item)
-    resolved_pw = resolve_password(host.password, item_meta)
+    raw_pw = host.password.raw if host.password else None
+    resolved_pw = resolve_password(raw_pw, op, item_meta)
 
     targets: list[HostConfig] = [host]
     if all_siblings:

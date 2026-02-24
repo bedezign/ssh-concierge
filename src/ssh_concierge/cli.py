@@ -13,137 +13,108 @@ import sys
 import time
 from pathlib import Path
 
-from ssh_concierge import onepassword
 from ssh_concierge.config import generate_runtime_config
 from ssh_concierge.deploy import cmd_deploy_key
 from ssh_concierge.expand import expand_host_config
 from ssh_concierge.field import FieldValue, normalize_original
 from ssh_concierge.models import HostConfig
+from ssh_concierge.onepassword import OnePassword, parse_item_to_host_configs
 from ssh_concierge.password import ItemMeta
 
 
-def _build_op_read_cache(raw_items: list[dict]) -> dict[str, str]:
-    """Build an in-memory cache of op:// reference → value from fetched items.
-
-    Indexes every field from every fetched item so that resolve_single() can
-    do a dict lookup instead of calling `op read` for references we already have.
-
-    Keys are lowercased op://{vault_id}/{item_id}/{field_label} for item-level
-    fields and op://{vault_id}/{item_id}/{section_label}/{field_label} for
-    section fields. The `op` CLI does case-insensitive field name matching,
-    so we mirror that by lowercasing keys and looking up with lowercased refs.
-    """
-    cache: dict[str, str] = {}
-    for item in raw_items:
-        vault_id = item.get('vault', {}).get('id', '')
-        item_id = item.get('id', '')
-        if not vault_id or not item_id:
-            continue
-        prefix = f'op://{vault_id}/{item_id}'
-        for field in item.get('fields', []):
-            value = field.get('value', '')
-            if not value:
-                continue
-            label = field.get('label', '')
-            if not label:
-                continue
-            section = field.get('section')
-            if section:
-                section_label = section.get('label', '')
-                if section_label:
-                    cache[f'{prefix}/{section_label}/{label}'.lower()] = value
-            else:
-                cache[f'{prefix}/{label}'.lower()] = value
-    return cache
-
-
-def _build_hostdata_entry(
+def resolve_host_fields(
     host: HostConfig,
     meta: ItemMeta,
     cached_fields: dict[str, FieldValue] | None,
+    op: OnePassword,
     *,
     no_cache: bool = False,
-    op_read_cache: dict[str, str] | None = None,
-) -> dict | None:
-    """Build a hostdata entry for a host using FieldValue resolution.
+) -> HostConfig:
+    """Resolve all FieldValues on a HostConfig, returning a new HostConfig.
 
+    For each FieldValue:
+    - Normalize self-refs (op://./field → op://vault/item/field)
+    - Check cache (skip resolution if original unchanged)
+    - Resolve non-sensitive references via op.read()
+    - Sensitive fields stay unresolved (resolved at SSH time)
+    """
+
+    def _resolve_field(name: str, fv: FieldValue) -> FieldValue:
+        # Normalize self-refs so the wrapper can resolve without item metadata
+        normalized = normalize_original(fv.original, meta.vault_id, meta.item_id)
+        if normalized != fv.original:
+            fv = FieldValue(
+                original=normalized,
+                resolved=fv.resolved,
+                sensitive=fv.sensitive,
+                field_type=fv.field_type,
+            )
+
+        if fv.sensitive:
+            return fv  # Don't resolve at generation time
+
+        cached = cached_fields.get(name) if cached_fields and not no_cache else None
+        if not fv.needs_resolution(cached):
+            return cached  # type: ignore[return-value]
+
+        return fv.resolve(op, vault_id=meta.vault_id, item_id=meta.item_id)
+
+    hostname = _resolve_field('hostname', host.hostname) if host.hostname else None
+    port = _resolve_field('port', host.port) if host.port else None
+    user = _resolve_field('user', host.user) if host.user else None
+    password = _resolve_field('password', host.password) if host.password else None
+
+    extra = {k: _resolve_field(k, fv) for k, fv in host.extra_directives.items()}
+    custom = {k: _resolve_field(k, fv) for k, fv in host.custom_fields.items()}
+
+    return dataclasses.replace(
+        host,
+        hostname=hostname,
+        port=port,
+        user=user,
+        password=password,
+        extra_directives=extra,
+        custom_fields=custom,
+    )
+
+
+def _build_hostdata_entry(host: HostConfig) -> dict | None:
+    """Build a hostdata entry from a resolved HostConfig.
+
+    Iterates all FieldValues already on the HostConfig and serializes them.
     Returns None if the host has no fields worth storing.
     """
     entry: dict = {}
-    fields: dict[str, FieldValue] = {}
 
-    # Collect all raw fields from the host
-    raw_fields: dict[str, str] = {}
-    if host.password:
-        raw_fields['password'] = host.password
-    if host.hostname:
-        raw_fields['hostname'] = host.hostname
-    if host.user:
-        raw_fields['user'] = host.user
-    if host.port:
-        raw_fields['port'] = host.port
-
-    # Include extra directive fields that have op:// or ops:// references
-    for directive, value in host.extra_directives.items():
-        if '://' in value:
-            raw_fields[directive] = value
-
-    # Also include fields referenced in clipboard template
-    if host.clipboard and host.section_label:
+    if host.clipboard:
         entry['clipboard'] = host.clipboard
-        for field_name in re.findall(r'\{(\w+)\}', host.clipboard):
-            if field_name not in raw_fields:
-                field_val = _get_host_field(host, field_name)
-                if field_val:
-                    raw_fields[field_name] = field_val
-
     if host.key_ref:
         entry['key'] = host.key_ref
 
-    # Create FieldValues, check cache, resolve non-sensitive
-    for name, raw in raw_fields.items():
-        # Normalize self-refs so the wrapper can resolve without item metadata
-        raw = normalize_original(raw, meta.vault_id, meta.item_id)
-        fv = FieldValue.from_raw(raw, name)
-        cached = cached_fields.get(name) if cached_fields and not no_cache else None
-
-        if fv.sensitive:
-            # Sensitive: store raw, never resolve at gen time
-            # But normalize the reference for storage
-            fields[name] = fv
-        elif not fv.needs_resolution(cached):
-            # Cache hit: reuse cached resolved value
-            fields[name] = cached  # type: ignore[assignment]
-        else:
-            # Resolve now
-            fields[name] = fv.resolve(
-                vault_id=meta.vault_id,
-                item_id=meta.item_id,
-                op_read_cache=op_read_cache,
-            )
+    fields: dict[str, dict] = {}
+    for name, fv in _iter_host_fields(host):
+        fields[name] = fv.to_hostdata()
 
     if fields:
-        entry['fields'] = {name: fv.to_hostdata() for name, fv in fields.items()}
+        entry['fields'] = fields
 
     return entry or None
 
 
-def _get_host_field(host: HostConfig, name: str) -> str | None:
-    """Look up a HostConfig attribute by field name (case-insensitive)."""
-    result = {
-        'password': host.password,
-        'user': host.user,
-        'port': host.port,
-        'hostname': host.hostname,
-    }.get(name.lower())
-    if result:
-        return result
-    # Case-insensitive lookup in custom fields
-    name_lower = name.lower()
-    for k, v in host.custom_fields.items():
-        if k.lower() == name_lower:
-            return v
-    return None
+def _iter_host_fields(host: HostConfig):
+    """Yield (name, FieldValue) for all resolvable fields on a HostConfig."""
+    if host.password:
+        yield 'password', host.password
+    if host.hostname:
+        yield 'hostname', host.hostname
+    if host.port:
+        yield 'port', host.port
+    if host.user:
+        yield 'user', host.user
+    for name, fv in host.extra_directives.items():
+        yield name, fv
+    for name, fv in host.custom_fields.items():
+        yield name, fv
 
 
 def _load_cached_hostdata(runtime_dir: Path) -> dict[str, dict[str, FieldValue]]:
@@ -283,10 +254,12 @@ def cmd_generate(
         if not quiet:
             print("Querying 1Password...")
 
+        op = OnePassword()
+
         # Load cached hostdata for cache comparison
         cached_hostdata = _load_cached_hostdata(runtime_dir) if not no_cache else {}
 
-        item_ids = onepassword.list_managed_item_ids()
+        item_ids = op.list_managed_item_ids()
         hosts = []
         hostdata: dict[str, dict] = {}
         items_processed = 0
@@ -295,36 +268,36 @@ def cmd_generate(
         raw_items: list[dict] = []
         parsed: list[tuple[HostConfig, ItemMeta]] = []
         for item_id in item_ids:
-            item = onepassword.get_item(item_id)
+            item = op.get_item(item_id)
             items_processed += 1
             raw_items.append(item)
             meta = ItemMeta(
                 vault_id=item.get('vault', {}).get('id', ''),
                 item_id=item.get('id', ''),
             )
-            for host in onepassword.parse_item_to_host_configs(item):
+            for host in parse_item_to_host_configs(item):
                 parsed.append((host, meta))
 
         key_registry = _build_key_registry(raw_items)
-        op_read_cache = _build_op_read_cache(raw_items)
+        op.seed_from_items(raw_items)
 
-        # Second pass: resolve key refs, expand, generate
+        # Second pass: resolve key refs, expand, resolve fields, generate
         for host, meta in parsed:
             host = _resolve_key_ref(host, key_registry)
             for expanded in expand_host_config(host):
-                hosts.append(expanded)
                 # Use first non-wildcard alias for cache lookup
                 cache_alias = next(
                     (a for a in expanded.aliases if '*' not in a and '?' not in a),
                     None,
                 )
                 cached_fields = cached_hostdata.get(cache_alias) if cache_alias else None
-                entry = _build_hostdata_entry(
-                    expanded, meta, cached_fields,
-                    no_cache=no_cache, op_read_cache=op_read_cache,
+                resolved_host = resolve_host_fields(
+                    expanded, meta, cached_fields, op, no_cache=no_cache,
                 )
+                hosts.append(resolved_host)
+                entry = _build_hostdata_entry(resolved_host)
                 if entry:
-                    for alias in expanded.aliases:
+                    for alias in resolved_host.aliases:
                         if '*' not in alias and '?' not in alias:
                             hostdata[alias] = entry
 

@@ -9,7 +9,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 from ssh_concierge.field import (
     OP_REF_PREFIX,
@@ -17,6 +17,9 @@ from ssh_concierge.field import (
     normalize_incomplete_ref,
     resolve_chain,
 )
+
+if TYPE_CHECKING:
+    from ssh_concierge.onepassword import OnePassword
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,7 @@ build_op_reference = normalize_reference
 
 def resolve_password(
     raw_password: str | None,
+    op: OnePassword,
     item_meta: ItemMeta | None = None,
 ) -> str | None:
     """Resolve a password value from a raw field string.
@@ -84,7 +88,7 @@ def resolve_password(
         )
         return None
 
-    return resolve_chain(raw_password, vault_id, item_id)
+    return resolve_chain(raw_password, op, vault_id, item_id)
 
 
 @contextmanager

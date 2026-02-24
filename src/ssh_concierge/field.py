@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ssh_concierge.onepassword import OnePassword
 
 logger = logging.getLogger(__name__)
 
@@ -112,33 +116,11 @@ def normalize_original(raw: str, vault_id: str, item_id: str) -> str:
     return CHAIN_SEPARATOR.join(normalized)
 
 
-def resolve_single(
-    reference: str,
-    op_read_cache: dict[str, str] | None = None,
-) -> str | None:
-    """Resolve a single op:// reference.
-
-    Checks op_read_cache first (populated from fetched items during generation),
-    falls back to `op read` CLI call. Cache keys are lowercased to match the
-    case-insensitive behavior of `op read`. Returns None on failure.
-    """
-    if op_read_cache is not None and reference.lower() in op_read_cache:
-        return op_read_cache[reference.lower()]
-
-    from ssh_concierge.onepassword import OpError, _run_op
-
-    try:
-        return _run_op(['read', reference]).strip()
-    except OpError as exc:
-        logger.warning('Failed to resolve reference %s: %s', reference, exc)
-        return None
-
-
 def resolve_chain(
     raw: str,
+    op: OnePassword,
     vault_id: str | None = None,
     item_id: str | None = None,
-    op_read_cache: dict[str, str] | None = None,
 ) -> str | None:
     """Resolve a || fallback chain.
 
@@ -146,7 +128,7 @@ def resolve_chain(
     - Segment contains '://' → normalize ops://→op://, expand self-refs, resolve
     - Otherwise → literal (use as-is if non-empty)
 
-    If op_read_cache is provided, references are looked up there before calling `op read`.
+    Uses op.read() for reference resolution (cache-aware).
     Returns first non-empty result, or None if all fail.
     """
     segments = raw.split(CHAIN_SEPARATOR)
@@ -164,7 +146,7 @@ def resolve_chain(
                 ref = expand_self_ref(ref, vault_id, item_id)
             # Normalize incomplete references
             ref = normalize_incomplete_ref(ref)
-            result = resolve_single(ref, op_read_cache)
+            result = op.read(ref)
             if result:
                 return result
         else:
@@ -182,6 +164,11 @@ class FieldValue:
     resolved: str | None
     sensitive: bool
     field_type: str  # 'literal', 'reference', 'template'
+
+    @property
+    def raw(self) -> str:
+        """Raw original value (for expand.py regex/template operations)."""
+        return self.original
 
     @classmethod
     def from_raw(cls, raw: str, field_name: str) -> FieldValue:
@@ -202,6 +189,12 @@ class FieldValue:
             field_type=self.field_type,
         )
 
+    def for_config(self) -> str | None:
+        """Value for hosts.conf. None if sensitive (excluded from config)."""
+        if self.sensitive:
+            return None
+        return self.resolved
+
     def needs_resolution(self, cached: FieldValue | None) -> bool:
         """Check if this field needs resolution (original changed or no cache)."""
         if cached is None:
@@ -212,9 +205,9 @@ class FieldValue:
 
     def resolve(
         self,
+        op: OnePassword,
         vault_id: str | None = None,
         item_id: str | None = None,
-        op_read_cache: dict[str, str] | None = None,
     ) -> FieldValue:
         """Resolve references and return a new FieldValue with the result.
 
@@ -223,7 +216,7 @@ class FieldValue:
         Templates are left unresolved (resolved at expansion time).
         References are resolved via resolve_chain().
 
-        If op_read_cache is provided, it's checked before calling `op read`.
+        Uses op.read() for reference resolution (cache-aware).
         """
         if self.sensitive:
             return self
@@ -236,7 +229,7 @@ class FieldValue:
             return self.with_resolved(self.original)
 
         # Reference type — resolve the chain
-        result = resolve_chain(self.original, vault_id, item_id, op_read_cache)
+        result = resolve_chain(self.original, op, vault_id, item_id)
         return self.with_resolved(result)
 
     def to_hostdata(self) -> dict:
