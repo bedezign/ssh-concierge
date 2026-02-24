@@ -61,7 +61,7 @@ An item becomes managed when **both** conditions are met:
    - Any item tagged **`SSH Host`** (Server, Login, Secure Note, etc.)
 2. **Config presence** — the item has a section starting with "SSH Config" containing at least an `aliases` field
 
-SSH Key items get `IdentityFile` + `IdentitiesOnly` directives. Items without keys (tagged `SSH Host`) produce Host blocks without key hints — SSH uses password auth or the 1Password agent.
+SSH Key items get `IdentityFile` directives. Items without keys (tagged `SSH Host`) produce Host blocks without key hints — SSH uses password auth or the 1Password agent.
 
 ### Single host
 
@@ -78,7 +78,7 @@ Add a section named **SSH Config** with these fields:
 | `key` | No | Cross-item SSH key reference. See [Cross-item key references](#cross-item-key-references). |
 | Any SSH directive | No | Added verbatim. E.g., `ProxyJump`, `ForwardAgent`, `LocalForward`. |
 
-The item's public key is automatically dumped and referenced via `IdentityFile` + `IdentitiesOnly yes`.
+The item's public key is automatically dumped and referenced via `IdentityFile`.
 
 ### Multiple host groups per key
 
@@ -323,7 +323,7 @@ The `key` field lets a non-key item (tagged `SSH Host`) reference an SSH key fro
 | Item name | `MyKey` | Searches all vaults for an SSH Key item with this name |
 | Vault/Item | `Work/MyKey` | Searches only the specified vault |
 
-The referenced item must be an SSH Key item that is also managed by ssh-concierge (has an "SSH Config" section). The generated Host block gets `IdentityFile` + `IdentitiesOnly` pointing to the referenced key.
+The referenced item must be an SSH Key item that is also managed by ssh-concierge (has an "SSH Config" section). The generated Host block gets `IdentityFile` pointing to the referenced key.
 
 ## CLI commands
 
@@ -333,11 +333,22 @@ ssh-concierge --generate --no-cache   # Regenerate, force re-resolution of all r
 ssh-concierge --flush                  # Delete runtime config entirely
 ssh-concierge --list                   # List all managed Host entries
 ssh-concierge --status                 # Show config path, age, host count
+ssh-concierge --debug ALIAS            # Show generated config block and field details
 ssh-concierge --deploy-key ALIAS       # Deploy SSH key to a host via ssh-copy-id
 ssh-concierge --deploy-key ALIAS --all # Deploy to all sibling hosts in the same section
 ```
 
 The zsh entry point accepts all flags and delegates to Python.
+
+### Debug
+
+`--debug` shows the generated SSH config block for an alias, plus all field details from `hostdata.json`:
+
+- Each field's original value, resolved value (for references), and sensitivity status
+- Key references that failed to resolve are flagged with a warning
+- Config age and staleness status
+
+Useful for diagnosing why a host isn't connecting as expected — wrong vault name in a key reference, unresolved hostname, stale cached values, etc.
 
 ### Deploy key
 
@@ -376,7 +387,9 @@ $XDG_RUNTIME_DIR/ssh-concierge/
 
 ### Field caching
 
-Non-sensitive field values are cached in `hostdata.json` (original reference + resolved value). On subsequent `--generate` runs, if the original reference hasn't changed, the cached resolved value is reused without calling `op read`. Use `--no-cache` to force re-resolution of all fields.
+Non-sensitive field values are cached in `hostdata.json` (original reference + resolved value). On subsequent `--generate` runs, if the original reference hasn't changed, the cached resolved value is checked against the freshly fetched item data. If the target value has changed (e.g., a `hostname` field pointing to `op://./website` where `website` was updated), the field is automatically re-resolved — no `--no-cache` needed.
+
+This stale detection works for references to fields on the same item or other managed items (since their data is already fetched). For references to unmanaged items, use `--no-cache` to force re-resolution.
 
 ## Coexistence with static config
 

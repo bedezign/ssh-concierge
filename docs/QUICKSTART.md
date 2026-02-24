@@ -55,7 +55,7 @@ ssh-concierge-py --help    # Python CLI directly
 2. Tag it **`SSH Host`**
 3. Add an **SSH Config** section with the same fields as above
 
-The `SSH Host` tag tells ssh-concierge to manage the item. The generated Host block won't include `IdentityFile` — SSH will use password auth or the 1Password agent.
+The `SSH Host` tag tells ssh-concierge to manage the item. Without a key, the generated Host block won't include `IdentityFile` — SSH will use password auth or the 1Password agent.
 
 ## Wire up SSH config
 
