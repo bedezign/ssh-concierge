@@ -827,3 +827,88 @@ class TestDirectiveValidation:
         hosts = parse_item_to_host_configs(SAMPLE_ITEM_SINGLE_SECTION)
         assert len(hosts) == 1
         assert hosts[0].extra_directives == {"ProxyJump": "bastion"}
+
+
+class TestKeyFieldExtraction:
+    """Tests for the 'key' field extraction into key_ref."""
+
+    def test_key_extracted(self):
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SERVER",
+            "tags": ["SSH Host"],
+            "fields": [
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "myhost",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "key",
+                    "value": "op://Work/MySSHKey",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+        assert hosts[0].key_ref == "op://Work/MySSHKey"
+
+    def test_key_not_in_extra_directives(self):
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SERVER",
+            "tags": ["SSH Host"],
+            "fields": [
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "myhost",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "key",
+                    "value": "op://Work/MySSHKey",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert "key" not in hosts[0].extra_directives
+
+    def test_no_key_field(self):
+        hosts = parse_item_to_host_configs(SAMPLE_ITEM_MINIMAL)
+        assert hosts[0].key_ref is None
+
+    def test_key_with_ssh_key_item(self):
+        """Key field on an SSH Key item (which already has public_key)."""
+        item = {
+            "id": "x",
+            "title": "x",
+            "category": "SSH_KEY",
+            "fields": [
+                {"id": "pk", "label": "public key", "value": "ssh-ed25519 AAAA"},
+                {"id": "fp", "label": "fingerprint", "value": "SHA256:x"},
+                {
+                    "id": "f1",
+                    "label": "aliases",
+                    "value": "myhost",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+                {
+                    "id": "f2",
+                    "label": "key",
+                    "value": "op://Work/OtherKey",
+                    "section": {"id": "s", "label": "SSH Config"},
+                },
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert hosts[0].key_ref == "op://Work/OtherKey"
+        # public_key still comes from item-level fields
+        assert hosts[0].public_key == "ssh-ed25519 AAAA"

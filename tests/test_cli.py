@@ -7,7 +7,10 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from ssh_concierge.cli import cmd_generate, cmd_flush, cmd_status, cmd_list, cmd_debug, main
+from ssh_concierge.cli import (
+    cmd_generate, cmd_flush, cmd_status, cmd_list, cmd_debug, main,
+    _parse_op_item_ref, _build_key_registry, _resolve_key_ref,
+)
 from ssh_concierge.deploy import cmd_deploy_key
 from ssh_concierge.models import HostConfig
 from ssh_concierge.onepassword import OpError
@@ -312,3 +315,185 @@ def _make_item_fields(host: HostConfig) -> list[dict]:
             "section": {"id": "sshconfig", "label": "SSH Config"},
         })
     return fields
+
+
+class TestParseOpItemRef:
+    def test_valid_reference(self):
+        assert _parse_op_item_ref('op://Work/MyKey') == ('Work', 'MyKey')
+
+    def test_vault_with_spaces(self):
+        assert _parse_op_item_ref('op://My Vault/Key Name') == ('My Vault', 'Key Name')
+
+    def test_no_prefix_still_parses(self):
+        """Without op:// prefix the string is split as-is."""
+        assert _parse_op_item_ref('Work/MyKey') == ('Work', 'MyKey')
+
+    def test_invalid_no_slash(self):
+        with pytest.raises(ValueError):
+            _parse_op_item_ref('op://WorkMyKey')
+
+    def test_invalid_empty_vault(self):
+        with pytest.raises(ValueError):
+            _parse_op_item_ref('op:///MyKey')
+
+    def test_invalid_empty_title(self):
+        with pytest.raises(ValueError):
+            _parse_op_item_ref('op://Work/')
+
+
+class TestBuildKeyRegistry:
+    def test_builds_from_items(self):
+        items = [
+            {
+                'id': 'key1',
+                'title': 'My SSH Key',
+                'vault': {'id': 'v1', 'name': 'Work'},
+                'fields': [
+                    {'label': 'public key', 'value': 'ssh-ed25519 AAAA'},
+                    {'label': 'fingerprint', 'value': 'SHA256:abc'},
+                ],
+            },
+        ]
+        registry = _build_key_registry(items)
+        assert ('work', 'my ssh key') in registry
+        assert registry[('work', 'my ssh key')] == ('ssh-ed25519 AAAA', 'SHA256:abc')
+        assert ('key1',) in registry
+
+    def test_skips_items_without_key_data(self):
+        items = [
+            {
+                'id': 'nokey',
+                'title': 'Server',
+                'vault': {'id': 'v1', 'name': 'Work'},
+                'fields': [],
+            },
+        ]
+        registry = _build_key_registry(items)
+        assert len(registry) == 0
+
+    def test_skips_section_fields(self):
+        """Only item-level (no section) public_key/fingerprint are used."""
+        items = [
+            {
+                'id': 'key1',
+                'title': 'Key',
+                'vault': {'id': 'v1', 'name': 'Work'},
+                'fields': [
+                    {'label': 'public key', 'value': 'ssh-ed25519 AAAA',
+                     'section': {'id': 's', 'label': 'SSH Config'}},
+                    {'label': 'fingerprint', 'value': 'SHA256:abc',
+                     'section': {'id': 's', 'label': 'SSH Config'}},
+                ],
+            },
+        ]
+        registry = _build_key_registry(items)
+        assert len(registry) == 0
+
+    def test_multiple_items(self):
+        items = [
+            {
+                'id': 'k1', 'title': 'Key A', 'vault': {'id': 'v1', 'name': 'Work'},
+                'fields': [
+                    {'label': 'public key', 'value': 'ssh-ed25519 AAAA-A'},
+                    {'label': 'fingerprint', 'value': 'SHA256:aaa'},
+                ],
+            },
+            {
+                'id': 'k2', 'title': 'Key B', 'vault': {'id': 'v2', 'name': 'Personal'},
+                'fields': [
+                    {'label': 'public key', 'value': 'ssh-rsa AAAA-B'},
+                    {'label': 'fingerprint', 'value': 'SHA256:bbb'},
+                ],
+            },
+        ]
+        registry = _build_key_registry(items)
+        assert registry[('work', 'key a')] == ('ssh-ed25519 AAAA-A', 'SHA256:aaa')
+        assert registry[('personal', 'key b')] == ('ssh-rsa AAAA-B', 'SHA256:bbb')
+
+
+class TestResolveKeyRef:
+    def _registry(self):
+        return {
+            ('work', 'my ssh key'): ('ssh-ed25519 AAAA', 'SHA256:abc'),
+            ('k1',): ('ssh-ed25519 AAAA', 'SHA256:abc'),
+        }
+
+    def test_resolves_key_ref(self):
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname='10.0.0.1',
+            key_ref='op://Work/My SSH Key',
+        )
+        result = _resolve_key_ref(host, self._registry())
+        assert result.public_key == 'ssh-ed25519 AAAA'
+        assert result.fingerprint == 'SHA256:abc'
+        assert result.key_ref == 'op://Work/My SSH Key'  # preserved
+
+    def test_already_has_public_key(self):
+        """key_ref is ignored when host already has a public_key."""
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname='10.0.0.1',
+            public_key='ssh-rsa existing',
+            fingerprint='SHA256:existing',
+            key_ref='op://Work/My SSH Key',
+        )
+        result = _resolve_key_ref(host, self._registry())
+        assert result.public_key == 'ssh-rsa existing'
+        assert result.fingerprint == 'SHA256:existing'
+
+    def test_no_key_ref(self):
+        host = HostConfig(aliases=['myhost'], hostname='10.0.0.1')
+        result = _resolve_key_ref(host, self._registry())
+        assert result is host  # unchanged
+
+    def test_key_not_found(self, capsys):
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname='10.0.0.1',
+            key_ref='op://Work/Nonexistent',
+        )
+        result = _resolve_key_ref(host, self._registry())
+        assert result.public_key is None
+        assert result.fingerprint is None
+        err = capsys.readouterr().err
+        assert 'not found' in err
+
+    def test_invalid_ref(self, capsys):
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname='10.0.0.1',
+            key_ref='not-a-valid-ref',
+        )
+        result = _resolve_key_ref(host, self._registry())
+        assert result.public_key is None
+        err = capsys.readouterr().err
+        assert 'invalid key reference' in err
+
+    def test_case_insensitive_lookup(self):
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname='10.0.0.1',
+            key_ref='op://WORK/MY SSH KEY',
+        )
+        result = _resolve_key_ref(host, self._registry())
+        assert result.public_key == 'ssh-ed25519 AAAA'
+
+
+class TestCmdDebugKeyRef:
+    def test_alias_with_key_reference(self, runtime_dir: Path, capsys):
+        runtime_dir.mkdir(parents=True)
+        (runtime_dir / 'hosts.conf').write_text(SAMPLE_HOSTS_CONF)
+        hd = {
+            'prod': {
+                'key': 'op://Work/ProdKey',
+                'refs': {'password': 'op://Work/ServerLogin/password'},
+            },
+        }
+        (runtime_dir / 'hostdata.json').write_text(json.dumps(hd))
+
+        cmd_debug('prod', runtime_dir)
+        output = capsys.readouterr().out
+
+        assert 'Key: op://Work/ProdKey' in output
+        assert 'Password:' in output

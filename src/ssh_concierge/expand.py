@@ -107,6 +107,8 @@ def expand_host_config(host: HostConfig) -> list[HostConfig]:
             },
             section_label=host.section_label,
             password=host.password,
+            clipboard=host.clipboard,
+            key_ref=host.key_ref,
         ))
 
     return result

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import fcntl
 import os
 import re
@@ -40,6 +41,9 @@ def _build_hostdata_entry(host: HostConfig, meta: ItemMeta) -> dict | None:
                         field_val, meta, host.section_label,
                     )
 
+    if host.key_ref:
+        entry['key'] = host.key_ref
+
     if refs:
         entry['refs'] = refs
     return entry or None
@@ -62,6 +66,77 @@ def _to_ref_or_literal(
     if value.startswith('op://'):
         return build_op_reference(value, meta, section_label)
     return value
+
+
+def _parse_op_item_ref(ref: str) -> tuple[str, str]:
+    """Parse an op://Vault/Item reference into (vault, title).
+
+    Strips the op:// prefix and splits on the first slash.
+    """
+    path = ref.removeprefix('op://')
+    parts = path.split('/', 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(f'Invalid op:// item reference: {ref}')
+    return parts[0], parts[1]
+
+
+def _build_key_registry(
+    items: list[dict],
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """Build a registry of SSH key data from fetched items.
+
+    Returns a dict mapping (vault_name.lower(), title.lower()) and
+    (item_id,) → (public_key, fingerprint).
+    """
+    registry: dict = {}
+    for item in items:
+        fields = item.get('fields', [])
+        public_key = None
+        fingerprint = None
+        for field in fields:
+            if field.get('section'):
+                continue
+            if field.get('label') == 'public key':
+                public_key = field.get('value')
+            elif field.get('label') == 'fingerprint':
+                fingerprint = field.get('value')
+        if public_key and fingerprint:
+            vault_name = item.get('vault', {}).get('name', '')
+            title = item.get('title', '')
+            if vault_name and title:
+                registry[(vault_name.lower(), title.lower())] = (public_key, fingerprint)
+            item_id = item.get('id', '')
+            if item_id:
+                registry[(item_id,)] = (public_key, fingerprint)
+    return registry
+
+
+def _resolve_key_ref(
+    host: HostConfig,
+    key_registry: dict,
+) -> HostConfig:
+    """Resolve a key_ref on a HostConfig against the key registry.
+
+    If the host already has a public_key or has no key_ref, returns unchanged.
+    """
+    if not host.key_ref or host.public_key:
+        return host
+    try:
+        vault, title = _parse_op_item_ref(host.key_ref)
+    except ValueError:
+        print(
+            f'ssh-concierge: invalid key reference "{host.key_ref}"',
+            file=sys.stderr,
+        )
+        return host
+    key = key_registry.get((vault.lower(), title.lower()))
+    if not key:
+        print(
+            f'ssh-concierge: key "{host.key_ref}" not found',
+            file=sys.stderr,
+        )
+        return host
+    return dataclasses.replace(host, public_key=key[0], fingerprint=key[1])
 
 
 def _default_runtime_dir() -> Path:
@@ -105,21 +180,33 @@ def cmd_generate(runtime_dir: Path, *, quiet: bool = False) -> None:
         hosts = []
         hostdata: dict[str, dict] = {}
         items_processed = 0
+
+        # First pass: fetch all items, parse into HostConfigs, build key registry
+        raw_items: list[dict] = []
+        parsed: list[tuple[HostConfig, ItemMeta]] = []
         for item_id in item_ids:
             item = onepassword.get_item(item_id)
             items_processed += 1
+            raw_items.append(item)
             meta = ItemMeta(
                 vault_id=item.get('vault', {}).get('id', ''),
                 item_id=item.get('id', ''),
             )
             for host in onepassword.parse_item_to_host_configs(item):
-                for expanded in expand_host_config(host):
-                    hosts.append(expanded)
-                    entry = _build_hostdata_entry(expanded, meta)
-                    if entry:
-                        for alias in expanded.aliases:
-                            if '*' not in alias and '?' not in alias:
-                                hostdata[alias] = entry
+                parsed.append((host, meta))
+
+        key_registry = _build_key_registry(raw_items)
+
+        # Second pass: resolve key refs, expand, generate
+        for host, meta in parsed:
+            host = _resolve_key_ref(host, key_registry)
+            for expanded in expand_host_config(host):
+                hosts.append(expanded)
+                entry = _build_hostdata_entry(expanded, meta)
+                if entry:
+                    for alias in expanded.aliases:
+                        if '*' not in alias and '?' not in alias:
+                            hostdata[alias] = entry
 
         generate_runtime_config(hosts, runtime_dir, hostdata or None)
 
@@ -211,6 +298,9 @@ def cmd_debug(alias: str, runtime_dir: Path) -> None:
 
     entry = lookup_hostdata(alias, runtime_dir / 'hostdata.json')
     if entry:
+        key = entry.get('key')
+        if key:
+            print(f'    # Key: {key}')
         refs = entry.get('refs', {})
         if 'password' in refs:
             print(f'    # Password: {refs["password"]}')

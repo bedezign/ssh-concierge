@@ -19,6 +19,7 @@ class HostConfig:
     section_label: str | None = None
     password: str | None = None
     clipboard: str | None = None
+    key_ref: str | None = None
 
     @property
     def effective_hostname(self) -> str:

@@ -226,3 +226,35 @@ class TestExpandHostConfig:
         result = expand_host_config(host)
         assert result == [host]
         assert result[0].password == "literal-pw"
+
+    def test_key_ref_preserved_through_expansion(self):
+        host = HostConfig(
+            aliases=["master1", "worker1"],
+            hostname=r"s/(.+)/\1.example.com/",
+            key_ref="op://Work/MyKey",
+        )
+        result = expand_host_config(host)
+        assert len(result) == 2
+        assert result[0].key_ref == "op://Work/MyKey"
+        assert result[1].key_ref == "op://Work/MyKey"
+
+    def test_key_ref_preserved_no_expansion(self):
+        host = HostConfig(
+            aliases=["myhost"],
+            hostname="10.0.0.1",
+            key_ref="op://Work/MyKey",
+        )
+        result = expand_host_config(host)
+        assert result == [host]
+        assert result[0].key_ref == "op://Work/MyKey"
+
+    def test_clipboard_preserved_through_expansion(self):
+        host = HostConfig(
+            aliases=["master1", "worker1"],
+            hostname=r"s/(.+)/\1.example.com/",
+            clipboard="sudo -i\\n{password}\\n",
+        )
+        result = expand_host_config(host)
+        assert len(result) == 2
+        assert result[0].clipboard == "sudo -i\\n{password}\\n"
+        assert result[1].clipboard == "sudo -i\\n{password}\\n"
