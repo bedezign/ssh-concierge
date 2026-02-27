@@ -59,23 +59,45 @@ class TestGenerateHostBlock:
         assert "    ProxyJump bastion\n" in block
         assert "    ForwardAgent yes\n" in block
 
-    def test_percent_escaped_in_user(self):
+    def test_backslash_percent_escaped_in_user(self):
+        r"""Only \% is converted to %% — bare % passes through."""
+        host = HostConfig(
+            aliases=["server1"],
+            hostname=fv("pam-gateway.example.com", "hostname"),
+            user=fv(r"jdoe@pajdoe\%corp.example.com@server1.example.com", "user"),
+        )
+        block = generate_host_block(host, keys_dir=Path("/keys"))
+        assert "    User jdoe@pajdoe%%corp.example.com@server1.example.com\n" in block
+
+    def test_bare_percent_not_escaped_in_user(self):
+        """Bare % in User passes through unchanged (SSH token)."""
         host = HostConfig(
             aliases=["server1"],
             hostname=fv("pam-gateway.example.com", "hostname"),
             user=fv("jdoe@pajdoe%corp.example.com@server1.example.com", "user"),
         )
         block = generate_host_block(host, keys_dir=Path("/keys"))
-        assert "    User jdoe@pajdoe%%corp.example.com@server1.example.com\n" in block
+        assert "    User jdoe@pajdoe%corp.example.com@server1.example.com\n" in block
 
-    def test_percent_escaped_in_extra_directives(self):
+    def test_percent_tokens_preserved_in_extra_directives(self):
+        """SSH percent tokens (%h, %r, %p) pass through unchanged."""
         host = HostConfig(
             aliases=["test"],
             hostname=fv("10.0.0.1", "hostname"),
-            extra_directives={"RemoteCommand": fv("echo %done", "RemoteCommand")},
+            extra_directives={"ControlPath": fv("/tmp/ssh-%r@%h:%p", "ControlPath")},
         )
         block = generate_host_block(host, keys_dir=Path("/keys"))
-        assert "    RemoteCommand echo %%done\n" in block
+        assert "    ControlPath /tmp/ssh-%r@%h:%p\n" in block
+
+    def test_backslash_percent_escaped_in_extra_directives(self):
+        r"""The \% escape works in extra directives too."""
+        host = HostConfig(
+            aliases=["test"],
+            hostname=fv("10.0.0.1", "hostname"),
+            extra_directives={"RemoteCommand": fv(r"echo 100\% done", "RemoteCommand")},
+        )
+        block = generate_host_block(host, keys_dir=Path("/keys"))
+        assert "    RemoteCommand echo 100%% done\n" in block
 
     def test_percent_not_escaped_in_hostname(self):
         host = HostConfig(aliases=["master1"], hostname=fv("%h.cluster1.example.com", "hostname"))

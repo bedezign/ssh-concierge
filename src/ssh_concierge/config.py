@@ -18,8 +18,8 @@ def _safe_filename(fingerprint: str) -> str:
 
 
 def _escape_percent(value: str) -> str:
-    """Escape literal % signs for SSH config token expansion (% → %%)."""
-    return value.replace('%', '%%')
+    r"""Convert \% (literal percent marker) to %% for SSH config."""
+    return value.replace('\\%', '%%')
 
 
 def generate_host_block(host: HostConfig, keys_dir: Path) -> str:
