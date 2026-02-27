@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ssh_concierge.argparse_ssh import extract_scp_host, extract_ssh_host
-from ssh_concierge.field import resolve_chain
+from ssh_concierge.field import TEMPLATE_CLOSE, TEMPLATE_OPEN, resolve_chain
 from ssh_concierge.onepassword import OnePassword
 from ssh_concierge.password import askpass_env
 
@@ -126,6 +126,7 @@ def resolve_clipboard(template: str, resolved: dict[str, str]) -> str:
     """
     result = template
     for name, value in resolved.items():
+        result = result.replace(f'{TEMPLATE_OPEN}{name}{TEMPLATE_CLOSE}', value)
         result = result.replace(f'{{{name}}}', value)
     # Replace literal \n (two chars: backslash + n) with real newlines.
     # Real newlines from multi-line 1Password fields are already newlines.

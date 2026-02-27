@@ -15,6 +15,8 @@ OP_REF_PREFIX = 'op://'
 OPS_REF_PREFIX = 'ops://'
 SELF_PREFIX = './'
 CHAIN_SEPARATOR = '||'
+TEMPLATE_OPEN = '{{'
+TEMPLATE_CLOSE = '}}'
 
 SENSITIVE_FIELD_NAMES = frozenset({'password', 'passwd', 'pass', 'secret', 'token'})
 
@@ -26,7 +28,7 @@ def _is_reference(value: str) -> bool:
 
 def _has_template(value: str) -> bool:
     """Check if a value contains {{...}} template syntax."""
-    return '{{' in value and '}}' in value
+    return TEMPLATE_OPEN in value and TEMPLATE_CLOSE in value
 
 
 def classify_type(raw: str) -> str:

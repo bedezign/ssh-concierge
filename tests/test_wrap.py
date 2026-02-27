@@ -237,6 +237,14 @@ class TestResolveClipboard:
         result = resolve_clipboard('{pw}\\n{pw}', {'pw': 'x'})
         assert result == 'x\nx'
 
+    def test_double_brace_placeholders(self):
+        result = resolve_clipboard('{{password}}', {'password': 'secret'})
+        assert result == 'secret'
+
+    def test_mixed_single_and_double_brace(self):
+        result = resolve_clipboard('{{user}}\\n{password}', {'user': 'admin', 'password': 'pw'})
+        assert result == 'admin\npw'
+
 
 class TestCopyToClipboard:
     @patch('ssh_concierge.wrap.subprocess.run')

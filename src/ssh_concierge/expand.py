@@ -5,13 +5,14 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ssh_concierge.field import TEMPLATE_CLOSE, TEMPLATE_OPEN
 from ssh_concierge.models import HostConfig
 
 if TYPE_CHECKING:
     from ssh_concierge.field import FieldValue
 
 _BRACE_RE = re.compile(r'^(.*?)\{([^}]+)\}(.*)$')
-_ALIAS_PLACEHOLDER = '{{alias}}'
+_ALIAS_PLACEHOLDER = f'{TEMPLATE_OPEN}alias{TEMPLATE_CLOSE}'
 
 
 def expand_braces(pattern: str) -> list[str]:
