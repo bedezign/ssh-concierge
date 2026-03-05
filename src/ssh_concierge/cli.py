@@ -20,6 +20,7 @@ from ssh_concierge.expand import expand_host_config
 from ssh_concierge.field import FieldValue, normalize_original, resolve_chain
 from ssh_concierge.models import HostConfig
 from ssh_concierge.onepassword import OnePassword, parse_item_to_host_configs
+from ssh_concierge.opref import OpRef
 from ssh_concierge.password import ItemMeta
 
 
@@ -41,6 +42,17 @@ def resolve_host_fields(
     """
 
     def _resolve_field(name: str, fv: FieldValue) -> FieldValue:
+        try:
+            return _resolve_field_inner(name, fv)
+        except ValueError as exc:
+            print(
+                f'ssh-concierge: bad reference in field "{name}" '
+                f'on item {meta.display_name}: {exc}',
+                file=sys.stderr,
+            )
+            return fv
+
+    def _resolve_field_inner(name: str, fv: FieldValue) -> FieldValue:
         # Normalize self-refs so the wrapper can resolve without item metadata
         normalized = normalize_original(fv.original, meta.vault_id, meta.item_id)
         if normalized != fv.original:
@@ -138,13 +150,10 @@ def _load_cached_hostdata(runtime_dir: Path) -> dict[str, dict[str, FieldValue]]
 def _parse_op_item_ref(ref: str) -> tuple[str, str]:
     """Parse an op://Vault/Item reference into (vault, title).
 
-    Strips the op:// prefix and splits on the first slash.
+    Supports quoted names ("Item / Name") and URL-encoded slashes (%2F).
     """
-    path = ref.removeprefix('op://')
-    parts = path.split('/', 1)
-    if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise ValueError(f'Invalid op:// item reference: {ref}')
-    return parts[0], parts[1]
+    parsed = OpRef.parse(ref)
+    return parsed.vault, parsed.item
 
 
 def _extract_key_pair(item: dict) -> tuple[str, str] | None:
@@ -182,23 +191,48 @@ def _build_key_registry(items: list[dict]) -> dict[tuple, tuple[str, str]]:
     return registry
 
 
-def _resolve_key_ref(host: HostConfig, key_registry: dict) -> HostConfig:
+def _resolve_key_ref(
+    host: HostConfig,
+    key_registry: dict,
+    op: OnePassword | None = None,
+    meta: ItemMeta | None = None,
+) -> HostConfig:
     """Resolve a key_ref on a HostConfig against the key registry.
+
+    If key_ref is an op:// reference (e.g. op://./SSH Config/key), resolves it
+    via the seeded cache first (no CLI calls) to get the actual item identifier.
+    Then looks up the resolved value in the key registry.
 
     If the host already has a public_key or has no key_ref, returns unchanged.
     """
     if not host.key_ref or host.public_key:
         return host
 
+    aliases = ', '.join(host.aliases)
+    key_ref = host.key_ref
+
+    # Resolve self-references (op://./...) via seeded cache (no CLI calls)
+    if '://' in key_ref and op is not None:
+        ref = OpRef.parse(key_ref)
+        if ref.is_self_ref:
+            if not meta:
+                print(f'ssh-concierge: cannot resolve self-ref "{key_ref}" without item metadata (host {aliases})', file=sys.stderr)
+                return host
+            resolved = op.read(ref.normalized(meta.vault_id, meta.item_id).for_op(), cache_only=True)
+            if not resolved:
+                print(f'ssh-concierge: key reference "{key_ref}" could not be resolved (host {aliases})', file=sys.stderr)
+                return host
+            key_ref = resolved
+
     try:
-        vault, title = _parse_op_item_ref(host.key_ref)
+        vault, title = _parse_op_item_ref(key_ref)
     except ValueError:
-        print(f'ssh-concierge: invalid key reference "{host.key_ref}"', file=sys.stderr)
+        print(f'ssh-concierge: invalid key reference "{key_ref}" on host {aliases}', file=sys.stderr)
         return host
 
     key = key_registry.get((vault.lower(), title.lower()))
     if not key:
-        print(f'ssh-concierge: key "{host.key_ref}" not found', file=sys.stderr)
+        print(f'ssh-concierge: key "{key_ref}" not found (host {aliases})', file=sys.stderr)
         return host
 
     return dataclasses.replace(host, public_key=key[0], fingerprint=key[1])
@@ -263,9 +297,12 @@ def cmd_generate(
             item = op.get_item(item_id)
             items_processed += 1
             raw_items.append(item)
+            vault = item.get('vault', {})
             meta = ItemMeta(
-                vault_id=item.get('vault', {}).get('id', ''),
+                vault_id=vault.get('id', ''),
                 item_id=item.get('id', ''),
+                vault_name=vault.get('name', ''),
+                item_title=item.get('title', ''),
             )
             for host in parse_item_to_host_configs(item):
                 parsed.append((host, meta))
@@ -275,7 +312,7 @@ def cmd_generate(
 
         # Second pass: resolve key refs, expand, resolve fields, generate
         for host, meta in parsed:
-            host = _resolve_key_ref(host, key_registry)
+            host = _resolve_key_ref(host, key_registry, op, meta)
             for expanded in expand_host_config(host):
                 # Use first non-wildcard alias for cache lookup
                 cache_alias = next(

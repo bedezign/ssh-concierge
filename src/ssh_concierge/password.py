@@ -11,19 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 
-from ssh_concierge.field import (
-    OP_REF_PREFIX,
-    expand_self_ref,
-    normalize_incomplete_ref,
-    resolve_chain,
-)
+from ssh_concierge.field import resolve_chain
+from ssh_concierge.opref import OP_PREFIX, OpRef
 
 if TYPE_CHECKING:
     from ssh_concierge.onepassword import OnePassword
 
 logger = logging.getLogger(__name__)
-
-OP_SELF_PREFIX = f'{OP_REF_PREFIX}./'
 
 
 @dataclass(frozen=True)
@@ -32,6 +26,15 @@ class ItemMeta:
 
     vault_id: str
     item_id: str
+    vault_name: str = ''
+    item_title: str = ''
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable identifier for error messages."""
+        if self.vault_name and self.item_title:
+            return f'{self.vault_name}/{self.item_title}'
+        return self.item_id or 'unknown'
 
 
 def normalize_reference(raw: str, item_meta: ItemMeta, section_label: str) -> str:
@@ -42,18 +45,12 @@ def normalize_reference(raw: str, item_meta: ItemMeta, section_label: str) -> st
     - op://Vault/Item → append /password (incomplete reference)
     - literal → op://{vault}/{item}/{section}/password  (points back to the field)
     """
-    if raw.startswith(OP_SELF_PREFIX):
-        return expand_self_ref(raw, item_meta.vault_id, item_meta.item_id)
+    if not raw.startswith(OP_PREFIX) and '://' not in raw:
+        # Literal password — construct reference pointing back to the 1Password field
+        return f'{OP_PREFIX}{item_meta.vault_id}/{item_meta.item_id}/{section_label}/password'
 
-    if raw.startswith(OP_REF_PREFIX):
-        return normalize_incomplete_ref(raw)
+    return OpRef.parse(raw).normalized(item_meta.vault_id, item_meta.item_id).for_op()
 
-    # Literal password — construct reference pointing back to the 1Password field
-    return f'{OP_REF_PREFIX}{item_meta.vault_id}/{item_meta.item_id}/{section_label}/password'
-
-
-# Keep backward compat alias
-build_op_reference = normalize_reference
 
 
 def resolve_password(
@@ -78,7 +75,7 @@ def resolve_password(
     if '://' not in raw_password:
         return raw_password
 
-    if raw_password.startswith(OP_SELF_PREFIX) and item_meta is None:
+    if '://' in raw_password and OpRef.parse(raw_password).is_self_ref and item_meta is None:
         logger.warning(
             'Cannot resolve %s without item metadata — falling back to interactive',
             raw_password,

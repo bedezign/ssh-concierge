@@ -6,14 +6,13 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ssh_concierge.opref import OP_PREFIX, OPS_PREFIX, OpRef
+
 if TYPE_CHECKING:
     from ssh_concierge.onepassword import OnePassword
 
 logger = logging.getLogger(__name__)
 
-OP_REF_PREFIX = 'op://'
-OPS_REF_PREFIX = 'ops://'
-SELF_PREFIX = './'
 CHAIN_SEPARATOR = '||'
 TEMPLATE_OPEN = '{{'
 TEMPLATE_CLOSE = '}}'
@@ -48,39 +47,12 @@ def is_sensitive(raw: str, field_name: str) -> bool:
     - The field name contains a known sensitive name (e.g. sudo_password, api_token)
     """
     name = field_name.lower()
-    return any(s in name for s in SENSITIVE_FIELD_NAMES) or OPS_REF_PREFIX in raw
+    return any(s in name for s in SENSITIVE_FIELD_NAMES) or OPS_PREFIX in raw
 
 
-def normalize_segment(segment: str) -> str:
-    """Normalize a single reference segment: ops:// → op://, expand op://. shorthand.
-
-    Self-references (op://./...) require item_meta for full expansion — that
-    happens at resolution time. This only handles ops:// → op:// normalization.
-    """
-    return segment.replace(OPS_REF_PREFIX, OP_REF_PREFIX, 1) if segment.startswith(OPS_REF_PREFIX) else segment
-
-
-def expand_self_ref(reference: str, vault_id: str, item_id: str) -> str:
-    """Expand op://./field → op://{vault_id}/{item_id}/field."""
-    self_prefix = f'{OP_REF_PREFIX}{SELF_PREFIX}'
-    if reference.startswith(self_prefix):
-        suffix = reference[len(self_prefix):]
-        return f'{OP_REF_PREFIX}{vault_id}/{item_id}/{suffix}'
-    return reference
-
-
-def normalize_incomplete_ref(reference: str) -> str:
-    """Append /password to incomplete op:// references.
-
-    op://Vault/Item (1 slash after op://) → op://Vault/Item/password
-    op://Vault/Item/field (2+ slashes) → unchanged
-    """
-    if not reference.startswith(OP_REF_PREFIX):
-        return reference
-    path = reference[len(OP_REF_PREFIX):]
-    if path.count('/') < 2:
-        return f'{reference}/password'
-    return reference
+def _normalize_ref_segment(segment: str, vault_id: str, item_id: str) -> str:
+    """Normalize a single reference segment for storage using OpRef."""
+    return OpRef.parse(segment).normalized(vault_id, item_id).for_storage()
 
 
 def normalize_original(raw: str, vault_id: str, item_id: str) -> str:
@@ -99,20 +71,14 @@ def normalize_original(raw: str, vault_id: str, item_id: str) -> str:
             normalized.append(segment)
             continue
 
-        # Handle ops:// self-refs: ops://./field → ops://vault/item/field
-        ops_self = f'{OPS_REF_PREFIX}{SELF_PREFIX}'
-        if stripped.startswith(ops_self):
-            suffix = stripped[len(ops_self):]
-            normalized.append(f'{OPS_REF_PREFIX}{vault_id}/{item_id}/{suffix}')
-            continue
-
-        # Handle op:// self-refs
-        ref = expand_self_ref(stripped, vault_id, item_id)
-        # Normalize incomplete refs
-        ref = normalize_incomplete_ref(ref)
-        normalized.append(ref)
+        normalized.append(_normalize_ref_segment(stripped, vault_id, item_id))
 
     return CHAIN_SEPARATOR.join(normalized)
+
+
+def _resolve_ref_segment(segment: str, op: OnePassword, vault_id: str | None, item_id: str | None, *, cache_only: bool) -> str | None:
+    """Resolve a single reference segment using OpRef."""
+    return op.read(OpRef.parse(segment).normalized(vault_id, item_id).for_op(), cache_only=cache_only)
 
 
 def resolve_chain(
@@ -126,7 +92,7 @@ def resolve_chain(
     """Resolve a || fallback chain.
 
     Split on '||', try each segment left-to-right:
-    - Segment contains '://' → normalize ops://→op://, expand self-refs, resolve
+    - Segment contains '://' → parse as OpRef, normalize, resolve via op.read()
     - Otherwise → literal (use as-is if non-empty)
 
     Uses op.read() for reference resolution (cache-aware).
@@ -141,14 +107,7 @@ def resolve_chain(
             continue
 
         if _is_reference(segment):
-            # Normalize ops:// → op://
-            ref = normalize_segment(segment)
-            # Expand self-references
-            if vault_id and item_id:
-                ref = expand_self_ref(ref, vault_id, item_id)
-            # Normalize incomplete references
-            ref = normalize_incomplete_ref(ref)
-            result = op.read(ref, cache_only=cache_only)
+            result = _resolve_ref_segment(segment, op, vault_id, item_id, cache_only=cache_only)
             if result:
                 return result
         else:

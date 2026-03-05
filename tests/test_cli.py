@@ -378,6 +378,15 @@ class TestParseOpItemRef:
         """Without op:// prefix the string is split as-is."""
         assert _parse_op_item_ref('Work/MyKey') == ('Work', 'MyKey')
 
+    def test_quoted_item_with_slashes(self):
+        assert _parse_op_item_ref('op://Work/"Laptop / SN-001234 / john.doe"') == ('Work', 'Laptop / SN-001234 / john.doe')
+
+    def test_url_encoded_item(self):
+        assert _parse_op_item_ref('op://Work/Laptop %2F SN-001234 %2F john.doe') == ('Work', 'Laptop / SN-001234 / john.doe')
+
+    def test_no_prefix_quoted(self):
+        assert _parse_op_item_ref('Work/"Laptop / SN-001234"') == ('Work', 'Laptop / SN-001234')
+
     def test_invalid_no_slash(self):
         with pytest.raises(ValueError):
             _parse_op_item_ref('op://WorkMyKey')
@@ -508,6 +517,7 @@ class TestResolveKeyRef:
         assert result.fingerprint is None
         err = capsys.readouterr().err
         assert 'not found' in err
+        assert 'myhost' in err
 
     def test_invalid_ref(self, capsys):
         host = HostConfig(
@@ -519,6 +529,7 @@ class TestResolveKeyRef:
         assert result.public_key is None
         err = capsys.readouterr().err
         assert 'invalid key reference' in err
+        assert 'myhost' in err
 
     def test_case_insensitive_lookup(self):
         host = HostConfig(
@@ -528,6 +539,82 @@ class TestResolveKeyRef:
         )
         result = _resolve_key_ref(host, self._registry())
         assert result.public_key == 'ssh-ed25519 AAAA'
+
+    def test_url_encoded_slashes_in_item_name(self):
+        registry = {
+            ('vdab', 'laptop / i0283854 / john.doe'): ('ssh-ed25519 BBBB', 'SHA256:xyz'),
+        }
+        host = HostConfig(
+            aliases=['vdab-laptop'],
+            hostname=fv('192.168.30.200', 'hostname'),
+            key_ref='op://Work/Laptop %2F SN-001234 %2F john.doe',
+        )
+        result = _resolve_key_ref(host, registry)
+        assert result.public_key == 'ssh-ed25519 BBBB'
+        assert result.fingerprint == 'SHA256:xyz'
+
+    def test_quoted_slashes_in_item_name(self):
+        registry = {
+            ('vdab', 'laptop / i0283854'): ('ssh-ed25519 CCCC', 'SHA256:qrs'),
+        }
+        host = HostConfig(
+            aliases=['vdab-laptop'],
+            hostname=fv('192.168.30.200', 'hostname'),
+            key_ref='op://Work/"Laptop / SN-001234"',
+        )
+        result = _resolve_key_ref(host, registry)
+        assert result.public_key == 'ssh-ed25519 CCCC'
+        assert result.fingerprint == 'SHA256:qrs'
+
+    def test_self_ref_resolved_via_seeded_cache(self):
+        """op://./SSH Config/key resolves to an item name via the seeded cache."""
+        registry = {
+            ('work', 'my ssh key'): ('ssh-ed25519 DDDD', 'SHA256:selfref'),
+        }
+        op = MagicMock()
+        op.read.return_value = 'op://Work/My SSH Key'
+        meta = ItemMeta(vault_id='v1', item_id='i1')
+        host = HostConfig(
+            aliases=['tunnel'],
+            hostname=fv('10.0.0.1', 'hostname'),
+            key_ref='op://./SSH Config/key',
+        )
+        result = _resolve_key_ref(host, registry, op, meta)
+        assert result.public_key == 'ssh-ed25519 DDDD'
+        assert result.fingerprint == 'SHA256:selfref'
+        op.read.assert_called_once_with('op://v1/i1/SSH Config/key', cache_only=True)
+
+    def test_self_ref_cache_miss(self, capsys):
+        """Self-ref that can't be resolved from seeded cache prints error."""
+        op = MagicMock()
+        op.read.return_value = None
+        meta = ItemMeta(vault_id='v1', item_id='i1')
+        host = HostConfig(
+            aliases=['tunnel'],
+            hostname=fv('10.0.0.1', 'hostname'),
+            key_ref='op://./SSH Config/key',
+        )
+        result = _resolve_key_ref(host, {}, op, meta)
+        assert result.public_key is None
+        err = capsys.readouterr().err
+        assert 'could not be resolved' in err
+        assert 'tunnel' in err
+
+    def test_direct_op_ref_goes_straight_to_registry(self):
+        """Non-self op:// key refs go directly to registry without resolution."""
+        registry = {
+            ('work', 'my ssh key'): ('ssh-ed25519 EEEE', 'SHA256:direct'),
+        }
+        op = MagicMock()
+        meta = ItemMeta(vault_id='v1', item_id='i1')
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname=fv('10.0.0.1', 'hostname'),
+            key_ref='op://Work/My SSH Key',
+        )
+        result = _resolve_key_ref(host, registry, op, meta)
+        assert result.public_key == 'ssh-ed25519 EEEE'
+        op.read.assert_not_called()
 
 
 class TestCmdDebugKeyRef:

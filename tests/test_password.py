@@ -14,7 +14,6 @@ from ssh_concierge.password import (
     ItemMeta,
     _shell_escape,
     askpass_env,
-    build_op_reference,
     normalize_reference,
     resolve_password,
 )
@@ -92,45 +91,45 @@ class TestResolvePassword:
         assert result is None
 
 
-class TestBuildOpReference:
+class TestNormalizeReferenceCompat:
     def test_literal_password(self):
         meta = ItemMeta(vault_id='vault-abc', item_id='item-123')
-        ref = build_op_reference('hunter2', meta, 'SSH Config')
+        ref = normalize_reference('hunter2', meta, 'SSH Config')
         assert ref == 'op://vault-abc/item-123/SSH Config/password'
 
     def test_full_op_reference_unchanged(self):
         meta = ItemMeta(vault_id='v', item_id='i')
-        ref = build_op_reference('op://MyVault/MyItem/password', meta, 'SSH Config')
+        ref = normalize_reference('op://MyVault/MyItem/password', meta, 'SSH Config')
         assert ref == 'op://MyVault/MyItem/password'
 
     def test_full_op_reference_with_section(self):
         meta = ItemMeta(vault_id='v', item_id='i')
-        ref = build_op_reference('op://Vault/Item/Section/field', meta, 'SSH Config')
+        ref = normalize_reference('op://Vault/Item/Section/field', meta, 'SSH Config')
         assert ref == 'op://Vault/Item/Section/field'
 
     def test_self_reference(self):
         meta = ItemMeta(vault_id='vault-abc', item_id='item-123')
-        ref = build_op_reference('op://./password', meta, 'SSH Config')
+        ref = normalize_reference('op://./password', meta, 'SSH Config')
         assert ref == 'op://vault-abc/item-123/password'
 
     def test_self_reference_with_section(self):
         meta = ItemMeta(vault_id='v1', item_id='i1')
-        ref = build_op_reference('op://./SSH Config/password', meta, 'SSH Config')
+        ref = normalize_reference('op://./SSH Config/password', meta, 'SSH Config')
         assert ref == 'op://v1/i1/SSH Config/password'
 
     def test_named_section(self):
         meta = ItemMeta(vault_id='v', item_id='i')
-        ref = build_op_reference('literal-pw', meta, 'SSH Config: prod')
+        ref = normalize_reference('literal-pw', meta, 'SSH Config: prod')
         assert ref == 'op://v/i/SSH Config: prod/password'
 
     def test_incomplete_op_reference_appends_password(self):
         meta = ItemMeta(vault_id='v', item_id='i')
-        ref = build_op_reference('op://MyVault/MyLogin', meta, 'SSH Config')
+        ref = normalize_reference('op://MyVault/MyLogin', meta, 'SSH Config')
         assert ref == 'op://MyVault/MyLogin/password'
 
     def test_incomplete_op_reference_simple(self):
         meta = ItemMeta(vault_id='v', item_id='i')
-        ref = build_op_reference('op://Vault/Item', meta, 'SSH Config')
+        ref = normalize_reference('op://Vault/Item', meta, 'SSH Config')
         assert ref == 'op://Vault/Item/password'
 
 

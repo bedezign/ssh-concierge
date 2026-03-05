@@ -9,11 +9,8 @@ import pytest
 from ssh_concierge.field import (
     FieldValue,
     classify_type,
-    expand_self_ref,
     is_sensitive,
-    normalize_incomplete_ref,
     normalize_original,
-    normalize_segment,
     resolve_chain,
 )
 from ssh_concierge.onepassword import OpError
@@ -88,53 +85,6 @@ class TestIsSensitive:
 
     def test_user_field_not_sensitive(self):
         assert is_sensitive('deploy', 'user') is False
-
-
-class TestNormalizeSegment:
-    def test_ops_to_op(self):
-        assert normalize_segment('ops://Vault/Item/field') == 'op://Vault/Item/field'
-
-    def test_op_unchanged(self):
-        assert normalize_segment('op://Vault/Item/field') == 'op://Vault/Item/field'
-
-    def test_literal_unchanged(self):
-        assert normalize_segment('10.0.0.1') == '10.0.0.1'
-
-    def test_only_first_ops_replaced(self):
-        # Unlikely but test the boundary
-        assert normalize_segment('ops://Vault/ops://other') == 'op://Vault/ops://other'
-
-
-class TestExpandSelfRef:
-    def test_self_ref(self):
-        result = expand_self_ref('op://./password', 'vault-abc', 'item-123')
-        assert result == 'op://vault-abc/item-123/password'
-
-    def test_self_ref_with_section(self):
-        result = expand_self_ref('op://./SSH Config/password', 'v1', 'i1')
-        assert result == 'op://v1/i1/SSH Config/password'
-
-    def test_full_ref_unchanged(self):
-        result = expand_self_ref('op://Vault/Item/field', 'v', 'i')
-        assert result == 'op://Vault/Item/field'
-
-    def test_literal_unchanged(self):
-        result = expand_self_ref('literal', 'v', 'i')
-        assert result == 'literal'
-
-
-class TestNormalizeIncompleteRef:
-    def test_incomplete_appends_password(self):
-        assert normalize_incomplete_ref('op://Vault/Item') == 'op://Vault/Item/password'
-
-    def test_complete_unchanged(self):
-        assert normalize_incomplete_ref('op://Vault/Item/field') == 'op://Vault/Item/field'
-
-    def test_with_section_unchanged(self):
-        assert normalize_incomplete_ref('op://Vault/Item/Section/field') == 'op://Vault/Item/Section/field'
-
-    def test_non_op_unchanged(self):
-        assert normalize_incomplete_ref('literal') == 'literal'
 
 
 class TestNormalizeOriginal:
