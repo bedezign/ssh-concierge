@@ -134,15 +134,13 @@ class OpRef:
 
     def for_op(self) -> str:
         """Emit URI for the op CLI: always op:// prefix, %2F-encoded names."""
-        return self._to_uri(force_op_prefix=True)
+        return self._to_uri(OP_PREFIX)
 
     def for_storage(self) -> str:
         """Emit URI for storage: preserves ops:// sensitivity marker, %2F-encoded."""
-        return self._to_uri(force_op_prefix=False)
+        return self._to_uri(OPS_PREFIX if self.sensitive else OP_PREFIX)
 
-    def _to_uri(self, *, force_op_prefix: bool) -> str:
-        prefix = OP_PREFIX if force_op_prefix else (OPS_PREFIX if self.sensitive else OP_PREFIX)
-
+    def _to_uri(self, prefix: str) -> str:
         if self.is_self_ref:
             base = f'{prefix}{SELF_MARKER}'
             return f'{base}/{self.field_path}' if self.field_path else base

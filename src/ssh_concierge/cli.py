@@ -56,12 +56,7 @@ def resolve_host_fields(
         # Normalize self-refs so the wrapper can resolve without item metadata
         normalized = normalize_original(fv.original, meta.vault_id, meta.item_id)
         if normalized != fv.original:
-            fv = FieldValue(
-                original=normalized,
-                resolved=fv.resolved,
-                sensitive=fv.sensitive,
-                field_type=fv.field_type,
-            )
+            fv = dataclasses.replace(fv, original=normalized)
 
         if fv.sensitive:
             return fv  # Don't resolve at generation time

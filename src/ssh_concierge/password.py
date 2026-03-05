@@ -52,7 +52,6 @@ def normalize_reference(raw: str, item_meta: ItemMeta, section_label: str) -> st
     return OpRef.parse(raw).normalized(item_meta.vault_id, item_meta.item_id).for_op()
 
 
-
 def resolve_password(
     raw_password: str | None,
     op: OnePassword,
@@ -75,7 +74,7 @@ def resolve_password(
     if '://' not in raw_password:
         return raw_password
 
-    if '://' in raw_password and OpRef.parse(raw_password).is_self_ref and item_meta is None:
+    if OpRef.parse(raw_password).is_self_ref and item_meta is None:
         logger.warning(
             'Cannot resolve %s without item metadata — falling back to interactive',
             raw_password,
