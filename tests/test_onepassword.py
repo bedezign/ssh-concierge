@@ -671,6 +671,40 @@ class TestDirectiveValidation:
         assert hosts[0].extra_directives['ProxyJump'].raw == 'bastion'
 
 
+class TestOnFieldExtraction:
+    def test_on_field_extracted(self):
+        item = {
+            'id': 'x', 'title': 'x', 'category': 'SSH_KEY',
+            'fields': [
+                {'id': 'pk', 'label': 'public key', 'value': 'ssh-ed25519 AAAA'},
+                {'id': 'fp', 'label': 'fingerprint', 'value': 'SHA256:x'},
+                {'id': 'f1', 'label': 'aliases', 'value': 'myhost', 'section': {'id': 's', 'label': 'SSH Config'}},
+                {'id': 'f2', 'label': 'on', 'value': 'alpha, beta', 'section': {'id': 's', 'label': 'SSH Config'}},
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert len(hosts) == 1
+        assert hosts[0].host_filter == 'alpha, beta'
+
+    def test_no_on_field(self):
+        hosts = parse_item_to_host_configs(SAMPLE_ITEM_MINIMAL)
+        assert hosts[0].host_filter is None
+
+    def test_on_not_in_extra_directives(self):
+        item = {
+            'id': 'x', 'title': 'x', 'category': 'SSH_KEY',
+            'fields': [
+                {'id': 'pk', 'label': 'public key', 'value': 'ssh-ed25519 AAAA'},
+                {'id': 'fp', 'label': 'fingerprint', 'value': 'SHA256:x'},
+                {'id': 'f1', 'label': 'aliases', 'value': 'myhost', 'section': {'id': 's', 'label': 'SSH Config'}},
+                {'id': 'f2', 'label': 'on', 'value': 'ash', 'section': {'id': 's', 'label': 'SSH Config'}},
+            ],
+        }
+        hosts = parse_item_to_host_configs(item)
+        assert 'on' not in hosts[0].extra_directives
+        assert 'on' not in hosts[0].custom_fields
+
+
 class TestKeyFieldExtraction:
     def test_key_extracted(self):
         item = {

@@ -250,6 +250,17 @@ class TestExpandHostConfig:
         assert result == [host]
         assert result[0].key_ref == "op://Work/MyKey"
 
+    def test_host_filter_preserved_through_expansion(self):
+        host = HostConfig(
+            aliases=["master1", "worker1"],
+            hostname=fv(r"s/(.+)/\1.example.com/", "hostname"),
+            host_filter="alpha, beta",
+        )
+        result = expand_host_config(host)
+        assert len(result) == 2
+        assert result[0].host_filter == "ash, pine"
+        assert result[1].host_filter == "ash, pine"
+
     def test_clipboard_preserved_through_expansion(self):
         host = HostConfig(
             aliases=["master1", "worker1"],

@@ -72,3 +72,58 @@ class TestHostConfig:
             assert False, 'Should raise FrozenInstanceError'
         except AttributeError:
             pass
+
+
+class TestMatchesHost:
+    def test_no_filter_matches_any(self):
+        host = HostConfig(aliases=['prod'])
+        assert host.matches_host('alpha') is True
+
+    def test_wildcard_matches_any(self):
+        host = HostConfig(aliases=['prod'], host_filter='*')
+        assert host.matches_host('alpha') is True
+
+    def test_single_match(self):
+        host = HostConfig(aliases=['prod'], host_filter='alpha')
+        assert host.matches_host('alpha') is True
+        assert host.matches_host('beta') is False
+
+    def test_multiple_match(self):
+        host = HostConfig(aliases=['prod'], host_filter='alpha, beta')
+        assert host.matches_host('alpha') is True
+        assert host.matches_host('beta') is True
+        assert host.matches_host('gamma') is False
+
+    def test_negation_single(self):
+        host = HostConfig(aliases=['prod'], host_filter='not alpha')
+        assert host.matches_host('beta') is True
+        assert host.matches_host('alpha') is False
+
+    def test_negation_multiple(self):
+        host = HostConfig(aliases=['prod'], host_filter='not alpha, beta')
+        assert host.matches_host('gamma') is True
+        assert host.matches_host('alpha') is False
+        assert host.matches_host('beta') is False
+
+    def test_case_insensitive(self):
+        host = HostConfig(aliases=['prod'], host_filter='Alpha')
+        assert host.matches_host('alpha') is True
+        assert host.matches_host('ALPHA') is True
+
+    def test_whitespace_tolerance(self):
+        host = HostConfig(aliases=['prod'], host_filter='  alpha ,  beta  ')
+        assert host.matches_host('alpha') is True
+        assert host.matches_host('beta') is True
+
+    def test_fqdn_short_match(self):
+        host = HostConfig(aliases=['prod'], host_filter='alpha')
+        assert host.matches_host('alpha.example.com') is True
+
+    def test_fqdn_exact_match(self):
+        host = HostConfig(aliases=['prod'], host_filter='alpha.example.com')
+        assert host.matches_host('alpha.example.com') is True
+        assert host.matches_host('alpha.other.com') is False
+
+    def test_fqdn_no_false_positive(self):
+        host = HostConfig(aliases=['prod'], host_filter='alpha.example.com')
+        assert host.matches_host('alpha') is False

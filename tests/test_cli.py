@@ -87,6 +87,46 @@ class TestCmdGenerate:
         with pytest.raises(OpError):
             cmd_generate(runtime_dir)
 
+    @patch("ssh_concierge.cli.socket")
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_host_filter_includes_matching(self, mock_op_cls, mock_socket, runtime_dir: Path):
+        mock_socket.gethostname.return_value = "alpha"
+        mock_op = mock_op_cls.return_value
+        mock_op.list_managed_item_ids.return_value = ["id1"]
+        mock_op.get_item.return_value = {"id": "id1", "vault": {"id": "v1"}, "fields": []}
+
+        matching_host = HostConfig(
+            aliases=["work-server"],
+            hostname=fv("10.0.0.1", "hostname"),
+            host_filter="alpha",
+        )
+        with patch("ssh_concierge.cli.parse_item_to_host_configs") as mock_parse:
+            mock_parse.return_value = [matching_host]
+            cmd_generate(runtime_dir)
+
+        content = (runtime_dir / "hosts.conf").read_text()
+        assert "Host work-server" in content
+
+    @patch("ssh_concierge.cli.socket")
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_host_filter_excludes_non_matching(self, mock_op_cls, mock_socket, runtime_dir: Path):
+        mock_socket.gethostname.return_value = "beta"
+        mock_op = mock_op_cls.return_value
+        mock_op.list_managed_item_ids.return_value = ["id1"]
+        mock_op.get_item.return_value = {"id": "id1", "vault": {"id": "v1"}, "fields": []}
+
+        filtered_host = HostConfig(
+            aliases=["work-server"],
+            hostname=fv("10.0.0.1", "hostname"),
+            host_filter="alpha",
+        )
+        with patch("ssh_concierge.cli.parse_item_to_host_configs") as mock_parse:
+            mock_parse.return_value = [filtered_host]
+            cmd_generate(runtime_dir)
+
+        content = (runtime_dir / "hosts.conf").read_text()
+        assert "Host work-server" not in content
+
 
 class TestCmdFlush:
     def test_removes_runtime_dir(self, runtime_dir: Path):

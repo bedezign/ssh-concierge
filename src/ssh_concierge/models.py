@@ -19,6 +19,7 @@ class HostConfig:
     fingerprint: str | None = None
     section_label: str | None = None
     key_ref: str | None = None
+    host_filter: str | None = None
 
     # Resolvable fields (FieldValue or None)
     hostname: FieldValue | None = None
@@ -54,6 +55,32 @@ class HostConfig:
     def config_extra(self) -> dict[str, str]:
         """Extra directives for SSH config output (excludes sensitive fields)."""
         return {k: val for k, fv in self.extra_directives.items() if (val := fv.for_config()) is not None}
+
+    def matches_host(self, hostname: str) -> bool:
+        """Check if this config should be generated on the given hostname.
+
+        Returns True if no filter is set, filter is '*', or the hostname
+        matches the filter criteria. Supports 'not' prefix for negation.
+        Matching is case-insensitive. Filter entry 'alpha' matches both
+        'alpha' and 'alpha.example.com'.
+        """
+        if not self.host_filter or self.host_filter.strip() == '*':
+            return True
+
+        raw = self.host_filter.strip()
+        negate = raw.lower().startswith('not ')
+        if negate:
+            raw = raw[4:]
+
+        entries = [e.strip().lower() for e in raw.split(',') if e.strip()]
+        hostname_lower = hostname.lower()
+        short_hostname = hostname_lower.split('.', 1)[0]
+
+        matched = any(
+            e == hostname_lower or e == short_hostname
+            for e in entries
+        )
+        return not matched if negate else matched
 
     @property
     def host_pattern(self) -> str:

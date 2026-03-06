@@ -117,6 +117,7 @@ def expand_host_config(host: HostConfig) -> list[HostConfig]:
             password=host.password,
             clipboard=host.clipboard,
             key_ref=host.key_ref,
+            host_filter=host.host_filter,
         )
         for alias in host.aliases
     ]

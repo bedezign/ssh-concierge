@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sys
 import time
 from pathlib import Path
@@ -96,6 +97,8 @@ def _build_hostdata_entry(host: HostConfig) -> dict | None:
     fields = {name: fv.to_hostdata() for name, fv in _iter_host_fields(host)}
 
     entry: dict = {}
+    if host.host_filter:
+        entry['on'] = host.host_filter
     if host.clipboard:
         entry['clipboard'] = host.clipboard
     if host.key_ref:
@@ -305,6 +308,10 @@ def cmd_generate(
         key_registry = _build_key_registry(raw_items)
         op.seed_from_items(raw_items)
 
+        # Filter by local hostname
+        local_hostname = socket.gethostname()
+        parsed = [(h, m) for h, m in parsed if h.matches_host(local_hostname)]
+
         # Second pass: resolve key refs, expand, resolve fields, generate
         for host, meta in parsed:
             host = _resolve_key_ref(host, key_registry, op, meta)
@@ -414,6 +421,11 @@ def cmd_debug(alias: str, runtime_dir: Path) -> None:
 
     entry = lookup_hostdata(alias, runtime_dir / 'hostdata.json')
     if entry:
+        # Host filter
+        on_filter = entry.get('on')
+        if on_filter:
+            print(f'    # On: {on_filter}')
+
         # Key reference
         key = entry.get('key')
         has_identity = any('IdentityFile' in line for line in block_lines)

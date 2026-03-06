@@ -16,7 +16,7 @@ from ssh_concierge.models import HostConfig
 logger = logging.getLogger(__name__)
 
 # Fields from the "SSH Config" section that map to HostConfig attributes directly
-_KNOWN_FIELDS = {'aliases', 'alias', 'hostname', 'host', 'port', 'user', 'username', 'password', 'clipboard', 'key'}
+_KNOWN_FIELDS = {'aliases', 'alias', 'hostname', 'host', 'port', 'user', 'username', 'password', 'clipboard', 'key', 'on'}
 
 # Valid SSH client config keywords (from man ssh_config, OpenSSH 8.x-9.x).
 # Maps lowercase → canonical casing. User input is normalized to the canonical form.
@@ -323,6 +323,7 @@ def parse_item_to_host_configs(item: dict[str, Any]) -> list[HostConfig]:
             password=_fv('password'),
             clipboard=_val('clipboard'),
             key_ref=_val('key'),
+            host_filter=_val('on'),
         ))
 
     return hosts
