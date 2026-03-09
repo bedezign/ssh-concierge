@@ -1,4 +1,4 @@
-#!/usr/bin/env zsh
+#!/bin/sh
 # ssh-concierge: Match exec entry point
 #
 # Called by: Match host * exec "ssh-concierge %h"
@@ -7,8 +7,13 @@
 # Hot path: stat the config file, check age < TTL → exit 0 (sub-millisecond)
 # Cold path: invoke Python to regenerate from 1Password
 
-readonly RUNTIME_DIR="${XDG_RUNTIME_DIR}/ssh-concierge"
-readonly CONFIG="${RUNTIME_DIR}/hosts.conf"
+if [ -n "$XDG_RUNTIME_DIR" ]; then
+    RUNTIME_DIR="$XDG_RUNTIME_DIR/ssh-concierge"
+else
+    RUNTIME_DIR="/tmp/ssh-concierge-$(id -u)"
+fi
+readonly RUNTIME_DIR
+readonly CONFIG="$RUNTIME_DIR/hosts.conf"
 readonly TTL=3600  # 1 hour
 
 # --generate / --flush / --list / --status: delegate to Python immediately
@@ -20,9 +25,11 @@ case "$1" in
 esac
 
 # Hot path: config exists and is fresh
-if [[ -f "$CONFIG" ]]; then
-    local age=$(( $(date +%s) - $(stat -c %Y "$CONFIG") ))
-    if (( age < TTL )); then
+if [ -f "$CONFIG" ]; then
+    now=$(date +%s)
+    mtime=$(stat -c %Y "$CONFIG" 2>/dev/null || stat -f %m "$CONFIG" 2>/dev/null || echo 0)
+    age=$((now - mtime))
+    if [ "$age" -lt "$TTL" ]; then
         exit 0
     fi
 fi
