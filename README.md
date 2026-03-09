@@ -12,6 +12,27 @@ Stop maintaining `~/.ssh/config` by hand. ssh-concierge reads host configuration
 - **Safe** — never blocks SSH, never modifies `~/.ssh/config`, always exits 0
 - **Gradual adoption** — coexists with your existing static SSH config files
 
+## vs 1Password SSH Bookmarks
+
+1Password has built-in [SSH Bookmarks](https://developer.1password.com/docs/ssh/bookmarks/) that pair keys to hosts and generate a config file. ssh-concierge takes a different approach — it treats 1Password as the single source of truth for your full SSH config, so every tool that speaks SSH (git, rsync, ansible, etc.) just works.
+
+| | SSH Bookmarks | ssh-concierge |
+|---|---|---|
+| Key-to-host mapping | Yes | Yes |
+| Generate SSH config | Yes (host + key only) | Yes (full: user, port, any directive) |
+| Password injection | No | Yes (via `SSH_ASKPASS`) |
+| Clipboard templates | No | Yes |
+| `op://` references in fields | No | Yes (with `\|\|` fallback chains) |
+| Brace expansion / regex | No | Yes (`worker{1..8}`, `s/pattern/replace/`) |
+| Multiple host groups per key | No | Yes (multiple SSH Config sections) |
+| Cross-item key references | No | Yes |
+| Per-machine filtering | No | Yes (`on` field) |
+| Deploy keys via `ssh-copy-id` | No | Yes |
+| Hosts without SSH keys | No | Yes (`SSH Host` tag) |
+| Custom fields for automation | No | Yes |
+
+If you only need to connect to a few hosts from the 1Password app, Bookmarks work fine. If you manage many hosts, need password auth, or want your SSH config fully driven from 1Password, ssh-concierge is the tool.
+
 ## How it works
 
 ```
@@ -92,6 +113,16 @@ Any 1Password item — Server, Login, Secure Note — can manage a host. Tag it 
 ```
 
 Creates a venv, installs the package, and symlinks binaries to `~/.local/bin/`. Run `./install.sh --help` for options, `./install.sh --uninstall` to remove.
+
+### SSH/SCP wrappers (optional)
+
+The installer also creates `~/.local/bin/ssh` and `~/.local/bin/scp` that shadow the system binaries. These wrappers are only needed for **password injection** and **clipboard** features — they look up the host in `hostdata.json`, resolve passwords via `op read`, and set `SSH_ASKPASS` before calling the real `ssh`/`scp`.
+
+If you only use SSH key authentication (via the 1Password agent), you don't need the wrappers. Remove them with:
+
+```bash
+rm ~/.local/bin/ssh ~/.local/bin/scp
+```
 
 See the [Quickstart](docs/QUICKSTART.md) or [Manual](docs/MANUAL.md#installation) for details.
 
