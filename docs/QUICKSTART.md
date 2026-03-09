@@ -5,24 +5,16 @@ Get ssh-concierge running in 5 minutes.
 ## Prerequisites
 
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
 - [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) installed and signed in
 - 1Password SSH agent enabled (`~/.1password/agent.sock`)
 
 ## Install
 
 ```bash
-# Install the Python CLI as a global tool (editable for easy development)
-uv tool install --editable /path/to/ssh-concierge
-
-# Symlink the shell entry point (the hot-path wrapper that SSH calls)
-ln -s /path/to/ssh-concierge/src/ssh-concierge ~/.local/bin/ssh-concierge
-chmod +x /path/to/ssh-concierge/src/ssh-concierge
-
-# Optional: SSH/SCP wrapper for transparent password injection
-ln -s $(which ssh-concierge-wrap) ~/.local/bin/ssh
-ln -s $(which ssh-concierge-wrap) ~/.local/bin/scp
+./install.sh
 ```
+
+The installer creates a virtual environment, installs the package, sets up symlinks in `~/.local/bin/`, and shows SSH config instructions. Run `./install.sh --help` for options.
 
 Ensure `~/.local/bin` is before `/usr/bin` in your `$PATH`.
 

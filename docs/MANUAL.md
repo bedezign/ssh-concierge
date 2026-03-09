@@ -21,22 +21,25 @@ SSH never blocks. The entry point always exits 0, even if 1Password is locked or
 
 ### Setup
 
+Run the installer from the repository:
+
 ```bash
-# Install the Python CLI as a global tool (editable — code changes take effect immediately)
-uv tool install --editable /path/to/ssh-concierge
-
-# Symlink the shell entry point (the hot-path wrapper that SSH calls)
-ln -s /path/to/ssh-concierge/src/ssh-concierge ~/.local/bin/ssh-concierge
-chmod +x /path/to/ssh-concierge/src/ssh-concierge
-
-# Optional: SSH/SCP wrapper for transparent password injection
-ln -s $(which ssh-concierge-wrap) ~/.local/bin/ssh
-ln -s $(which ssh-concierge-wrap) ~/.local/bin/scp
+./install.sh
 ```
 
-Ensure `~/.local/bin` is before `/usr/bin` in your `$PATH`.
+This creates a virtual environment at `~/.local/share/ssh-concierge/venv`, installs the package, and symlinks all binaries to `~/.local/bin/`. It also checks your PATH and shows SSH config instructions.
 
-This gives you:
+**Options**:
+
+```
+--venv PATH       Virtual environment path (default: ~/.local/share/ssh-concierge/venv)
+--prefix PATH     Binary directory for symlinks (default: ~/.local/bin)
+--python CMD      Python interpreter (default: auto-detect 3.11+)
+--source PATH     Source directory (default: auto-detect)
+--uninstall       Remove ssh-concierge (venv, symlinks)
+```
+
+After installation, you have:
 
 | Command | What | Used by |
 |---------|------|---------|
@@ -44,13 +47,29 @@ This gives you:
 | `ssh-concierge-py` | Python CLI directly | The shell wrapper, or you directly |
 | `ssh` / `scp` | Optional wrappers that inject passwords from 1Password | Your shell (replaces `/usr/bin/ssh` in PATH) |
 
-### Updating
+Ensure `~/.local/bin` is before `/usr/bin` in your `$PATH`.
 
-Because `--editable` is used, pulling new code takes effect immediately — no reinstall needed. If `pyproject.toml` changes (new dependencies, entry points), re-run:
+### Manual setup
+
+If you prefer manual installation (e.g., for development with live code changes):
 
 ```bash
-uv tool install --editable /path/to/ssh-concierge --force
+uv tool install --editable /path/to/ssh-concierge
+ln -s /path/to/ssh-concierge/src/ssh-concierge ~/.local/bin/ssh-concierge
+chmod +x /path/to/ssh-concierge/src/ssh-concierge
+ln -s $(which ssh-concierge-wrap) ~/.local/bin/ssh
+ln -s $(which ssh-concierge-wrap) ~/.local/bin/scp
 ```
+
+With `--editable`, pulling new code takes effect immediately. If `pyproject.toml` changes, re-run with `--force`.
+
+### Uninstalling
+
+```bash
+./install.sh --uninstall
+```
+
+This removes the venv and all symlinks. SSH config changes (`~/.ssh/config`) must be removed manually.
 
 ## 1Password item structure
 
@@ -76,7 +95,9 @@ Add a section named **SSH Config** with these fields:
 | `password` | No | Password for auth. See [Password authentication](#password-authentication). |
 | `clipboard` | No | Template copied to clipboard on connect. See [Clipboard](#clipboard). |
 | `key` | No | Cross-item SSH key reference. See [Cross-item key references](#cross-item-key-references). |
+| `on` | No | Per-host filter. See [Per-host filtering](#per-host-filtering). |
 | Any SSH directive | No | Added verbatim. E.g., `ProxyJump`, `ForwardAgent`, `LocalForward`. |
+| Any other name | No | Stored as a custom field. See [Custom fields](#custom-fields). |
 
 The item's public key is automatically dumped and referenced via `IdentityFile`.
 
@@ -324,6 +345,58 @@ The `key` field lets a non-key item (tagged `SSH Host`) reference an SSH key fro
 | Vault/Item | `Work/MyKey` | Searches only the specified vault |
 
 The referenced item must be an SSH Key item that is also managed by ssh-concierge (has an "SSH Config" section). The generated Host block gets `IdentityFile` pointing to the referenced key.
+
+## Per-host filtering
+
+The `on` field restricts a host config to specific machines. When set, the config is only generated on machines whose hostname matches the filter. This is useful when you share 1Password across multiple machines but some hosts should only appear in SSH config on certain machines.
+
+### Filter syntax
+
+| Filter | Matches |
+|--------|---------|
+| *(empty)* | All machines (default) |
+| `*` | All machines |
+| `alpha` | Machine named `alpha` (or `alpha.example.com`) |
+| `alpha, beta` | Machines named `alpha` or `beta` |
+| `not alpha` | All machines except `alpha` |
+| `not alpha, beta` | All machines except `alpha` and `beta` |
+
+Matching is **case-insensitive**. A short name like `alpha` matches both `alpha` and `alpha.example.com` (FQDN). Whitespace around commas is ignored.
+
+### Example
+
+You have a work laptop (`work-laptop`) and a personal desktop (`home-pc`). A host should only appear on the work laptop:
+
+| Field | Value |
+|-------|-------|
+| `aliases` | `internal-server` |
+| `hostname` | `10.0.0.50` |
+| `on` | `work-laptop` |
+
+Running `ssh-concierge --generate` on `home-pc` skips this host entirely.
+
+## Custom fields
+
+Any field in the SSH Config section that isn't a known field (`aliases`, `hostname`, `port`, `user`, `password`, `clipboard`, `key`, `on`) and isn't a valid SSH directive (like `ProxyJump`, `ForwardAgent`, etc.) is stored as a **custom field**.
+
+Custom fields are not written to `hosts.conf` (they're not SSH directives), but they are:
+
+- Stored in `hostdata.json` with the same resolution rules as other fields (references, sensitivity, caching)
+- Available as `{field_name}` placeholders in the `clipboard` template
+- Shown in `--debug` output
+
+This is useful for storing arbitrary data alongside a host — for example, a `sudo_password` or `api_key` that you want available in the clipboard template but not in SSH config.
+
+### Example
+
+| Field | Value |
+|-------|-------|
+| `aliases` | `prod-server` |
+| `password` | `op://./password` |
+| `sudo_password` | `ops://./sudo_password` |
+| `clipboard` | `sudo -i\n{sudo_password}\n` |
+
+The `sudo_password` field is resolved at SSH time (marked sensitive via `ops://`) and injected into the clipboard template.
 
 ## CLI commands
 
