@@ -91,6 +91,7 @@ Any 1Password item — Server, Login, Secure Note — can manage a host. Tag it 
 - **Deploy keys** — `--deploy-key worker1 --all` installs pubkeys via `ssh-copy-id`
 - **Brace expansion** — `worker{1..8}` expands to `worker1` through `worker8`
 - **Regex substitution** — `s/pattern/replacement/` on any field for per-alias expansion
+- **`{{alias}}` placeholder** — `{{alias}}.example.com` expands per alias (simpler alternative to regex)
 - **Any SSH directive** — `ProxyJump`, `ForwardAgent`, `LocalForward`, etc. — just add the field
 - **Custom fields** — store arbitrary data for use in clipboard templates
 - **Atomic writes + lockfile** — safe under concurrent SSH connections

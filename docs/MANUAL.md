@@ -7,6 +7,8 @@ ssh-concierge has two layers:
 - A **shell entry point** called by SSH's `Match exec` on every connection. It checks if the generated config file is fresh (< 1 hour old). If yes, it exits immediately — sub-millisecond, no Python involved.
 - A **Python core** that queries 1Password, builds SSH config fragments, and dumps public keys. Only runs on the cold path (first connection or expired cache).
 
+The generated config lives in a [runtime directory](#runtime-config) (`$XDG_RUNTIME_DIR/ssh-concierge/`): `hosts.conf` is the SSH config fragment, `hostdata.json` caches field data for the SSH/SCP wrapper, and `keys/` holds public keys for `IdentityFile` hinting.
+
 SSH never blocks. The entry point always exits 0, even if 1Password is locked or the `op` CLI fails.
 
 ## Installation
@@ -149,6 +151,20 @@ prdworker{1..8}        → prdworker1 prdworker2 ... prdworker8
 
 Commas inside braces are not confused with the alias separator.
 
+### Plain aliases vs expansion
+
+Plain comma-separated aliases produce a **single** `Host` line — all aliases share the same settings:
+
+```
+aliases: prod, prod-web-01, production.example.com
+```
+```ssh-config
+Host prod prod-web-01 production.example.com
+    HostName 203.0.113.42
+```
+
+Brace expansion produces the same result — multiple aliases on one `Host` line — **unless** a field uses regex (`s/.../`), `{{alias}}`, or other per-alias expansion. In that case, each alias gets its own `Host` block with individually computed values. See [Regex substitution](#regex-substitution) and [`{{alias}}` placeholder](#alias-placeholder).
+
 ## Regex substitution
 
 Any field value starting with `s/` is treated as a regex substitution applied to each alias individually. This generates one `Host` block per alias with the computed value. Works on `hostname`, `user`, and any extra directive.
@@ -214,6 +230,37 @@ Each generated block gets its own computed `HostName` but shares the same `User`
 
 Without regex on any field, all aliases share a single `Host` line (standard SSH behavior).
 
+## `{{alias}}` placeholder
+
+As a simpler alternative to regex, any field value can use `{{alias}}` as a placeholder. It's replaced with the current alias during per-alias expansion — same mechanism as regex, but without the pattern matching.
+
+```
+aliases:  worker{1..3}
+hostname: {{alias}}.cluster1.example.com
+```
+
+Generates:
+```ssh-config
+Host worker1
+    HostName worker1.cluster1.example.com
+Host worker2
+    HostName worker2.cluster1.example.com
+Host worker3
+    HostName worker3.cluster1.example.com
+```
+
+Works on any field — `hostname`, `user`, extra directives, etc. Can be combined with static fields (same rules as regex: fields without `{{alias}}` are copied as-is to each block).
+
+> **Note**: `{{alias}}` uses double braces to avoid ambiguity with the `{field_name}` single-brace syntax used in clipboard templates.
+
+## Percent escaping
+
+SSH performs [token expansion](https://man.openbsd.org/ssh_config#TOKENS) on `User` and most directives — `%h`, `%p`, `%r`, etc. are replaced with connection parameters. This means a literal `%` in a field value would be misinterpreted.
+
+ssh-concierge handles this automatically: write `\%` in your 1Password field, and it becomes `%%` in the generated config (which SSH reads as a literal `%`). `HostName` is left unescaped since `%h` there is intentional.
+
+This matters most for CyberArk PSMP usernames (see [regex example above](#user-example-cyberark-psmp)) where `%` appears in the compound username.
+
 ## Field resolution
 
 Any field value (not just `password`) can contain `op://` references with optional `||` fallback chains.
@@ -225,9 +272,32 @@ Any field value (not just `password`) can contain `op://` references with option
 | `op://Vault/Item/field` | `op://Work/ServerLogin/password` | Used directly with `op read` |
 | `op://Vault/Item` | `op://Work/ServerLogin` | `/password` appended automatically |
 | `op://./field` | `op://./hostname` | Expanded using the current item's vault/item IDs |
+| `op://./Section/field` | `op://./SSH Config/password` | Self-reference with explicit section |
 | `ops://...` | `ops://./password` | Same as `op://` but marks the field as **sensitive** |
 | `ref\|\|fallback` | `op://./hostname\|\|10.0.0.1` | Try reference first, fall back to literal |
 | Literal | `deploy` | Used as-is |
+
+### Names with slashes or spaces
+
+1Password item and vault names can contain `/` characters (e.g., `Laptop / SN-001234 / john.doe`). Since `op://` uses `/` as a delimiter, these names need special handling. ssh-concierge supports two approaches:
+
+**Double quotes** — wrap the name in `"..."` to prevent `/` from being treated as a delimiter:
+
+```
+op://Work/"Laptop / SN-001234 / john.doe"/password
+op://"My / Vault"/Item/field
+```
+
+**URL encoding** — use `%2F` in place of `/`:
+
+```
+op://Work/Laptop %2F SN-001234 %2F john.doe/password
+op://My %2F Vault/Item/field
+```
+
+Both produce the same result. Quoting is easier to read in 1Password fields; URL encoding is what gets sent to the `op` CLI under the hood. Names with spaces work as-is — no quoting needed (e.g., `op://My Vault/My Item/password`).
+
+This is an ssh-concierge extension — the `op` CLI itself does not support quoted names and requires UUIDs for names containing unsupported characters.
 
 ### `||` fallback chains
 
