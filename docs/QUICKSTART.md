@@ -15,7 +15,7 @@ Get ssh-concierge running in 5 minutes.
 # Install the Python CLI as a global tool (editable for easy development)
 uv tool install --editable /path/to/ssh-concierge
 
-# Symlink the zsh entry point (the hot-path wrapper that SSH calls)
+# Symlink the shell entry point (the hot-path wrapper that SSH calls)
 ln -s /path/to/ssh-concierge/src/ssh-concierge ~/.local/bin/ssh-concierge
 chmod +x /path/to/ssh-concierge/src/ssh-concierge
 
@@ -29,7 +29,7 @@ Ensure `~/.local/bin` is before `/usr/bin` in your `$PATH`.
 Verify the tools are available:
 
 ```bash
-ssh-concierge --help       # zsh wrapper → delegates to Python
+ssh-concierge --help       # shell wrapper → delegates to Python
 ssh-concierge-py --help    # Python CLI directly
 ```
 

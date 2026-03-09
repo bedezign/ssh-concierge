@@ -4,7 +4,7 @@
 
 ssh-concierge has two layers:
 
-- A **zsh entry point** called by SSH's `Match exec` on every connection. It checks if the generated config file is fresh (< 1 hour old). If yes, it exits immediately — sub-millisecond, no Python involved.
+- A **shell entry point** called by SSH's `Match exec` on every connection. It checks if the generated config file is fresh (< 1 hour old). If yes, it exits immediately — sub-millisecond, no Python involved.
 - A **Python core** that queries 1Password, builds SSH config fragments, and dumps public keys. Only runs on the cold path (first connection or expired cache).
 
 SSH never blocks. The entry point always exits 0, even if 1Password is locked or the `op` CLI fails.
@@ -25,7 +25,7 @@ SSH never blocks. The entry point always exits 0, even if 1Password is locked or
 # Install the Python CLI as a global tool (editable — code changes take effect immediately)
 uv tool install --editable /path/to/ssh-concierge
 
-# Symlink the zsh entry point (the hot-path wrapper that SSH calls)
+# Symlink the shell entry point (the hot-path wrapper that SSH calls)
 ln -s /path/to/ssh-concierge/src/ssh-concierge ~/.local/bin/ssh-concierge
 chmod +x /path/to/ssh-concierge/src/ssh-concierge
 
@@ -40,8 +40,8 @@ This gives you:
 
 | Command | What | Used by |
 |---------|------|---------|
-| `ssh-concierge` | Zsh wrapper — hot path caching + delegates to Python | SSH's `Match exec`, your shell |
-| `ssh-concierge-py` | Python CLI directly | The zsh wrapper, or you directly |
+| `ssh-concierge` | Shell wrapper — hot path caching + delegates to Python | SSH's `Match exec`, your shell |
+| `ssh-concierge-py` | Python CLI directly | The shell wrapper, or you directly |
 | `ssh` / `scp` | Optional wrappers that inject passwords from 1Password | Your shell (replaces `/usr/bin/ssh` in PATH) |
 
 ### Updating
@@ -338,7 +338,7 @@ ssh-concierge --deploy-key ALIAS       # Deploy SSH key to a host via ssh-copy-i
 ssh-concierge --deploy-key ALIAS --all # Deploy to all sibling hosts in the same section
 ```
 
-The zsh entry point accepts all flags and delegates to Python.
+The shell entry point accepts all flags and delegates to Python.
 
 ### Debug
 
@@ -379,7 +379,7 @@ $XDG_RUNTIME_DIR/ssh-concierge/
 
 ## Cache behavior
 
-- **TTL**: 1 hour. The zsh entry point checks the mtime of `hosts.conf`.
+- **TTL**: 1 hour. The shell entry point checks the mtime of `hosts.conf`.
 - **No background refresh**. The cache is populated on the first SSH connection after expiry.
 - **Manual refresh**: `ssh-concierge --generate` (after modifying items in 1Password).
 - **Force re-resolution**: `ssh-concierge --generate --no-cache` (when the referenced *value* in 1Password changed but the reference itself didn't).

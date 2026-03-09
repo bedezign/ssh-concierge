@@ -187,14 +187,14 @@ class TestDeployKeyToHost:
         assert deploy_key_to_host(host, Path('/tmp/key.pub')) is False
 
     @patch('ssh_concierge.deploy.subprocess.run')
-    def test_with_password_uses_setsid_and_askpass(self, mock_run):
+    def test_with_password_uses_askpass(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
         host = _host(['myhost'])
         result = deploy_key_to_host(host, Path('/tmp/key.pub'), password='secret')
         assert result is True
-        # Should use setsid prefix
         call_args = mock_run.call_args
-        assert call_args[0][0][0] == 'setsid'
+        # Should use ssh-copy-id directly (no setsid)
+        assert call_args[0][0][0] == 'ssh-copy-id'
         # Should have SSH_ASKPASS in env
         env = call_args[1].get('env', {})
         assert 'SSH_ASKPASS' in env

@@ -11,18 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from ssh_concierge.argparse_ssh import extract_scp_host, extract_ssh_host
+from ssh_concierge.config import default_runtime_dir
 from ssh_concierge.field import TEMPLATE_CLOSE, TEMPLATE_OPEN, resolve_chain
 from ssh_concierge.onepassword import OnePassword
 from ssh_concierge.password import askpass_env
 
 logger = logging.getLogger(__name__)
-
-
-def _default_runtime_dir() -> Path:
-    xdg = os.environ.get('XDG_RUNTIME_DIR')
-    if xdg:
-        return Path(xdg) / 'ssh-concierge'
-    return Path('/tmp') / f'ssh-concierge-{os.getuid()}'
 
 
 def find_real_binary(tool: str) -> str | None:
@@ -52,23 +46,6 @@ def lookup_hostdata(host: str, hostdata_path: Path) -> dict[str, Any] | None:
         return None
 
 
-def lookup_reference(host: str, hostdata_path: Path) -> str | None:
-    """Look up an op:// password reference for a host.
-
-    Supports both new fields format and legacy refs format.
-    """
-    entry = lookup_hostdata(host, hostdata_path)
-    if entry:
-        # New format: fields dict
-        fields = entry.get('fields', {})
-        pw_field = fields.get('password', {})
-        if pw_field:
-            return pw_field.get('original')
-        # Legacy format: refs dict
-        return entry.get('refs', {}).get('password')
-    return None
-
-
 def _resolve_fields(entry: dict) -> dict[str, str] | None:
     """Resolve all fields from a hostdata entry.
 
@@ -78,8 +55,7 @@ def _resolve_fields(entry: dict) -> dict[str, str] | None:
     """
     fields = entry.get('fields', {})
     if not fields:
-        # Legacy format fallback
-        return _resolve_refs(entry.get('refs', {}))
+        return {}
 
     op = OnePassword()  # Empty cache, will call op read as needed
     resolved: dict[str, str] = {}
@@ -98,23 +74,6 @@ def _resolve_fields(entry: dict) -> dict[str, str] | None:
                 # Other field failures are non-critical
                 continue
             resolved[name] = result
-    return resolved
-
-
-def _resolve_refs(refs: dict[str, str]) -> dict[str, str] | None:
-    """Resolve all refs (legacy format), returning resolved dict or None on any op:// failure."""
-    if not refs:
-        return {}
-    op = OnePassword()
-    resolved: dict[str, str] = {}
-    for name, value in refs.items():
-        if value.startswith('op://'):
-            result = op.read(value)
-            if result is None:
-                return None
-            resolved[name] = result
-        else:
-            resolved[name] = value
     return resolved
 
 
@@ -171,7 +130,7 @@ def main() -> None:
         host = extract_ssh_host(args)
 
     if host:
-        runtime_dir = _default_runtime_dir()
+        runtime_dir = default_runtime_dir()
         entry = lookup_hostdata(host, runtime_dir / 'hostdata.json')
         if entry:
             resolved = _resolve_fields(entry)

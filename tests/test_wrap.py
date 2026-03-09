@@ -16,7 +16,6 @@ from ssh_concierge.wrap import (
     copy_to_clipboard,
     find_real_binary,
     lookup_hostdata,
-    lookup_reference,
     main,
     resolve_clipboard,
 )
@@ -65,14 +64,18 @@ class TestLookupHostdata:
     def test_found(self, tmp_path: Path):
         hd_file = tmp_path / 'hostdata.json'
         hd_file.write_text(json.dumps({
-            'myhost': {'refs': {'password': 'op://vault/item/password'}},
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'op://vault/item/password', 'resolved': None, 'sensitive': True},
+                },
+            },
         }))
         entry = lookup_hostdata('myhost', hd_file)
-        assert entry == {'refs': {'password': 'op://vault/item/password'}}
+        assert entry['fields']['password']['original'] == 'op://vault/item/password'
 
     def test_not_found(self, tmp_path: Path):
         hd_file = tmp_path / 'hostdata.json'
-        hd_file.write_text(json.dumps({'other': {'refs': {}}}))
+        hd_file.write_text(json.dumps({'other': {'fields': {}}}))
         assert lookup_hostdata('myhost', hd_file) is None
 
     def test_file_missing(self, tmp_path: Path):
@@ -87,47 +90,15 @@ class TestLookupHostdata:
         hd_file = tmp_path / 'hostdata.json'
         hd_file.write_text(json.dumps({
             'myhost': {
-                'refs': {'password': 'op://v/i/pw'},
+                'fields': {
+                    'password': {'original': 'ops://v/i/pw', 'resolved': None, 'sensitive': True},
+                },
                 'clipboard': 'sudo -i\\n{password}\\n',
             },
         }))
         entry = lookup_hostdata('myhost', hd_file)
         assert entry['clipboard'] == 'sudo -i\\n{password}\\n'
-        assert entry['refs']['password'] == 'op://v/i/pw'
-
-
-class TestLookupReference:
-    """Compat wrapper tests — supports both legacy refs and new fields format."""
-
-    def test_found_legacy(self, tmp_path: Path):
-        hd_file = tmp_path / 'hostdata.json'
-        hd_file.write_text(json.dumps({
-            'myhost': {'refs': {'password': 'op://vault/item/password'}},
-        }))
-        assert lookup_reference('myhost', hd_file) == 'op://vault/item/password'
-
-    def test_found_new_format(self, tmp_path: Path):
-        hd_file = tmp_path / 'hostdata.json'
-        hd_file.write_text(json.dumps({
-            'myhost': {
-                'fields': {
-                    'password': {'original': 'ops://vault/item/password', 'resolved': None, 'sensitive': True},
-                },
-            },
-        }))
-        assert lookup_reference('myhost', hd_file) == 'ops://vault/item/password'
-
-    def test_not_found(self, tmp_path: Path):
-        hd_file = tmp_path / 'hostdata.json'
-        hd_file.write_text(json.dumps({'other': {'refs': {}}}))
-        assert lookup_reference('myhost', hd_file) is None
-
-    def test_no_password_ref(self, tmp_path: Path):
-        hd_file = tmp_path / 'hostdata.json'
-        hd_file.write_text(json.dumps({
-            'myhost': {'clipboard': 'hello'},
-        }))
-        assert lookup_reference('myhost', hd_file) is None
+        assert entry['fields']['password']['original'] == 'ops://v/i/pw'
 
 
 class TestResolveFields:
@@ -183,12 +154,6 @@ class TestResolveFields:
         }
         result = _resolve_fields(entry)
         assert result == {'user': 'deploy'}
-
-    def test_legacy_refs_fallback(self):
-        """Legacy format without fields key falls back to _resolve_refs."""
-        entry = {'refs': {'user': 'admin'}}
-        result = _resolve_fields(entry)
-        assert result == {'user': 'admin'}
 
     @patch('ssh_concierge.wrap.OnePassword')
     def test_fallback_chain(self, mock_op_cls):
@@ -311,23 +276,27 @@ class TestMain:
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
     def test_no_hostdata_falls_through(self, mock_find, mock_execv, tmp_path: Path):
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
                 main()
         mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh', 'myhost'])
 
     @patch('ssh_concierge.wrap._run_with_askpass', return_value=0)
     @patch('ssh_concierge.wrap.OnePassword')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
-    def test_with_password_legacy(self, mock_find, mock_op_cls, mock_run, tmp_path: Path):
+    def test_with_password(self, mock_find, mock_op_cls, mock_run, tmp_path: Path):
         mock_op = mock_op_cls.return_value
         mock_op.read.return_value = 'secret123'
         hd_file = tmp_path / 'hostdata.json'
         hd_file.write_text(json.dumps({
-            'myhost': {'refs': {'password': 'op://v/i/pw'}},
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://v/i/pw', 'resolved': None, 'sensitive': True},
+                },
+            },
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 assert exc_info.value.code == 0
@@ -349,11 +318,15 @@ class TestMain:
         mock_op.read.return_value = None
         hd_file = tmp_path / 'hostdata.json'
         hd_file.write_text(json.dumps({
-            'myhost': {'refs': {'password': 'op://v/i/pw'}},
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://v/i/pw', 'resolved': None, 'sensitive': True},
+                },
+            },
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
                 main()
         mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh', 'myhost'])
 
@@ -361,7 +334,7 @@ class TestMain:
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/scp')
     def test_scp_tool_detection(self, mock_find, mock_execv, tmp_path: Path):
         with patch('sys.argv', ['/home/user/.local/bin/scp', 'myhost:/file', '.']):
-            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
                 main()
         mock_execv.assert_called_once_with('/usr/bin/scp', ['scp', 'myhost:/file', '.'])
 
@@ -369,7 +342,7 @@ class TestMain:
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
     def test_no_args_passes_through(self, mock_find, mock_execv, tmp_path: Path):
         with patch('sys.argv', ['/home/user/.local/bin/ssh']):
-            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
                 main()
         mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh'])
 
@@ -384,7 +357,7 @@ class TestMain:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
                 main()
 
         mock_clip.assert_called_once_with('hello\nworld')
@@ -395,19 +368,21 @@ class TestMain:
     @patch('ssh_concierge.wrap.OnePassword')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
     def test_password_and_clipboard(self, mock_find, mock_op_cls, mock_run, mock_clip, tmp_path: Path):
-        """Host with both password and clipboard (legacy refs format)."""
+        """Host with both password and clipboard."""
         mock_op = mock_op_cls.return_value
         mock_op.read.return_value = 'secret'
         hd_file = tmp_path / 'hostdata.json'
         hd_file.write_text(json.dumps({
             'myhost': {
-                'refs': {'password': 'op://v/i/pw'},
+                'fields': {
+                    'password': {'original': 'ops://v/i/pw', 'resolved': None, 'sensitive': True},
+                },
                 'clipboard': 'sudo -i\\n{password}\\n',
             },
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 assert exc_info.value.code == 0
@@ -435,7 +410,7 @@ class TestMainNewFormat:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 assert exc_info.value.code == 0
@@ -460,7 +435,7 @@ class TestMainNewFormat:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 assert exc_info.value.code == 0
@@ -482,7 +457,7 @@ class TestMainNewFormat:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap._default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
                 main()
 
         # No password → falls through to execv

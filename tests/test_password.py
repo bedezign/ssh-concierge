@@ -12,7 +12,6 @@ import pytest
 from ssh_concierge.onepassword import OnePassword, OpError
 from ssh_concierge.password import (
     ItemMeta,
-    _shell_escape,
     askpass_env,
     normalize_reference,
     resolve_password,
@@ -176,10 +175,10 @@ class TestAskpassEnv:
             assert script.exists()
             assert script.stat().st_mode & stat.S_IRWXU == stat.S_IRWXU
 
-    def test_script_echoes_password(self):
+    def test_script_outputs_password(self):
         with askpass_env('testpw123') as env:
             content = Path(env['SSH_ASKPASS']).read_text()
-            assert 'echo "testpw123"' in content
+            assert 'testpw123' in content
 
     def test_cleans_up_on_exit(self):
         with askpass_env('pw') as env:
@@ -188,30 +187,22 @@ class TestAskpassEnv:
         assert not Path(script_path).exists()
 
     def test_password_with_special_chars(self):
-        with askpass_env('p@ss"w$rd`test\\') as env:
+        """Heredoc approach handles all special chars without escaping."""
+        pw = 'p@ss"w$rd`test\\'
+        with askpass_env(pw) as env:
             content = Path(env['SSH_ASKPASS']).read_text()
-            # Verify escaping
-            assert '\\"' in content
-            assert '\\$' in content
-            assert '\\`' in content
-            assert '\\\\' in content
+            # The password appears literally in the heredoc (no escaping needed)
+            assert pw in content
 
+    def test_password_with_dollar_and_backtick(self):
+        """Verify shell metacharacters are preserved literally."""
+        import subprocess
 
-class TestShellEscape:
-    def test_backslash(self):
-        assert _shell_escape('a\\b') == 'a\\\\b'
-
-    def test_double_quote(self):
-        assert _shell_escape('a"b') == 'a\\"b'
-
-    def test_dollar(self):
-        assert _shell_escape('$var') == '\\$var'
-
-    def test_backtick(self):
-        assert _shell_escape('`cmd`') == '\\`cmd\\`'
-
-    def test_no_special_chars(self):
-        assert _shell_escape('plain') == 'plain'
-
-    def test_combined(self):
-        assert _shell_escape('a"b$c\\d`e') == 'a\\"b\\$c\\\\d\\`e'
+        pw = '$HOME `whoami` "quoted" \\backslash'
+        with askpass_env(pw) as env:
+            result = subprocess.run(
+                [env['SSH_ASKPASS']],
+                capture_output=True,
+                text=True,
+            )
+            assert result.stdout.rstrip('\n') == pw

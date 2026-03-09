@@ -98,8 +98,9 @@ def askpass_env(password: str) -> Iterator[dict[str, str]]:
     """
     fd, script_path = tempfile.mkstemp(prefix='ssh-concierge-askpass-')
     try:
-        # Write the askpass script — just echoes the password
-        os.write(fd, f'#!/bin/sh\necho "{_shell_escape(password)}"\n'.encode())
+        # Write the askpass script using a heredoc to avoid shell escaping issues.
+        # The delimiter is unlikely to appear in any password.
+        os.write(fd, f"#!/bin/sh\ncat <<'__SSH_CONCIERGE_PW__'\n{password}\n__SSH_CONCIERGE_PW__\n".encode())
         os.close(fd)
         os.chmod(script_path, stat.S_IRWXU)  # 0700
 
@@ -112,8 +113,3 @@ def askpass_env(password: str) -> Iterator[dict[str, str]]:
             Path(script_path).unlink(missing_ok=True)
         except OSError:
             pass
-
-
-def _shell_escape(value: str) -> str:
-    """Escape a value for use inside double quotes in a shell script."""
-    return value.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')

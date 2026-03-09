@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
 
-from ssh_concierge.field import TEMPLATE_CLOSE, TEMPLATE_OPEN
+from ssh_concierge.field import TEMPLATE_CLOSE, TEMPLATE_OPEN, FieldValue, classify_type
 from ssh_concierge.models import HostConfig
-
-if TYPE_CHECKING:
-    from ssh_concierge.field import FieldValue
 
 _BRACE_RE = re.compile(r'^(.*?)\{([^}]+)\}(.*)$')
 _ALIAS_PLACEHOLDER = f'{TEMPLATE_OPEN}alias{TEMPLATE_CLOSE}'
@@ -79,16 +75,14 @@ def _resolve_fv(fv: FieldValue | None, alias: str) -> FieldValue | None:
     if fv is None:
         return None
 
-    from ssh_concierge.field import FieldValue as FV, classify_type
-
     raw = fv.raw
     if _is_regex(raw):
         parts = raw.split('/')
         new_val = re.sub(parts[1], parts[2], alias)
-        return FV(original=new_val, resolved=None, sensitive=fv.sensitive, field_type='literal')
+        return FieldValue(original=new_val, resolved=None, sensitive=fv.sensitive, field_type='literal')
     if _has_alias(raw):
         new_val = raw.replace(_ALIAS_PLACEHOLDER, alias)
-        return FV(original=new_val, resolved=None, sensitive=fv.sensitive, field_type=classify_type(new_val))
+        return FieldValue(original=new_val, resolved=None, sensitive=fv.sensitive, field_type=classify_type(new_val))
     return fv
 
 

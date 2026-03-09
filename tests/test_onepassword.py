@@ -697,7 +697,7 @@ class TestOnFieldExtraction:
                 {'id': 'pk', 'label': 'public key', 'value': 'ssh-ed25519 AAAA'},
                 {'id': 'fp', 'label': 'fingerprint', 'value': 'SHA256:x'},
                 {'id': 'f1', 'label': 'aliases', 'value': 'myhost', 'section': {'id': 's', 'label': 'SSH Config'}},
-                {'id': 'f2', 'label': 'on', 'value': 'ash', 'section': {'id': 's', 'label': 'SSH Config'}},
+                {'id': 'f2', 'label': 'on', 'value': 'alpha', 'section': {'id': 's', 'label': 'SSH Config'}},
             ],
         }
         hosts = parse_item_to_host_configs(item)

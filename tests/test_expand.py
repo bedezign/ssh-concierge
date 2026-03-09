@@ -258,8 +258,8 @@ class TestExpandHostConfig:
         )
         result = expand_host_config(host)
         assert len(result) == 2
-        assert result[0].host_filter == "ash, pine"
-        assert result[1].host_filter == "ash, pine"
+        assert result[0].host_filter == "alpha, beta"
+        assert result[1].host_filter == "alpha, beta"
 
     def test_clipboard_preserved_through_expansion(self):
         host = HostConfig(

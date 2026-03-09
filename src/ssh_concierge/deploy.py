@@ -87,9 +87,8 @@ def deploy_key_to_host(
         if password:
             with askpass_env(password) as env_vars:
                 env = {**os.environ, **env_vars}
-                # setsid detaches from TTY so SSH uses ASKPASS instead of stdin
                 result = subprocess.run(
-                    ['setsid'] + args,
+                    args,
                     env=env,
                     stdout=sys.stdout,
                     stderr=sys.stderr,

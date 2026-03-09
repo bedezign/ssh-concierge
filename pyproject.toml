@@ -16,6 +16,7 @@ classifiers = [
     "Topic :: System :: Systems Administration",
     "Topic :: System :: Networking",
     "Environment :: Console",
+    "Operating System :: POSIX",
 ]
 
 [project.urls]

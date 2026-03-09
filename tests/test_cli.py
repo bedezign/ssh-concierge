@@ -582,10 +582,10 @@ class TestResolveKeyRef:
 
     def test_url_encoded_slashes_in_item_name(self):
         registry = {
-            ('vdab', 'laptop / i0283854 / john.doe'): ('ssh-ed25519 BBBB', 'SHA256:xyz'),
+            ('work', 'laptop / sn-001234 / john.doe'): ('ssh-ed25519 BBBB', 'SHA256:xyz'),
         }
         host = HostConfig(
-            aliases=['vdab-laptop'],
+            aliases=['work-laptop'],
             hostname=fv('192.168.30.200', 'hostname'),
             key_ref='op://Work/Laptop %2F SN-001234 %2F john.doe',
         )
@@ -595,10 +595,10 @@ class TestResolveKeyRef:
 
     def test_quoted_slashes_in_item_name(self):
         registry = {
-            ('vdab', 'laptop / i0283854'): ('ssh-ed25519 CCCC', 'SHA256:qrs'),
+            ('work', 'laptop / sn-001234'): ('ssh-ed25519 CCCC', 'SHA256:qrs'),
         }
         host = HostConfig(
-            aliases=['vdab-laptop'],
+            aliases=['work-laptop'],
             hostname=fv('192.168.30.200', 'hostname'),
             key_ref='op://Work/"Laptop / SN-001234"',
         )
