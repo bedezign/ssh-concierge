@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +36,7 @@ def _default_runtime_dir() -> Path:
     xdg = os.environ.get('XDG_RUNTIME_DIR')
     if xdg:
         return Path(xdg) / 'ssh-concierge'
-    return Path('/tmp') / f'ssh-concierge-{os.getuid()}'
+    return Path(tempfile.gettempdir()) / f'ssh-concierge-{os.getuid()}'
 
 
 @dataclass(frozen=True)

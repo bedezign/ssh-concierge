@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -101,7 +102,7 @@ def create_askpass(password: str, *, askpass_dir: Path | None = None) -> dict[st
     """
     if askpass_dir is None:
         xdg = os.environ.get('XDG_RUNTIME_DIR')
-        askpass_dir = Path(xdg) / 'ssh-concierge' if xdg else Path('/tmp')
+        askpass_dir = Path(xdg) / 'ssh-concierge' if xdg else Path(tempfile.gettempdir())
     askpass_dir.mkdir(parents=True, exist_ok=True)
     script_path = askpass_dir / 'askpass'
 

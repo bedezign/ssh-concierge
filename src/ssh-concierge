@@ -20,7 +20,7 @@ esac
 if [ -n "$XDG_RUNTIME_DIR" ]; then
     _ENV="$XDG_RUNTIME_DIR/ssh-concierge/env.sh"
 else
-    _ENV="/tmp/ssh-concierge-$(id -u)/env.sh"
+    _ENV="${TMPDIR:-/tmp}/ssh-concierge-$(id -u)/env.sh"
 fi
 
 if [ -f "$_ENV" ]; then
@@ -32,7 +32,7 @@ if [ -z "$CONFIG" ]; then
     if [ -n "$XDG_RUNTIME_DIR" ]; then
         CONFIG="$XDG_RUNTIME_DIR/ssh-concierge/hosts.conf"
     else
-        CONFIG="/tmp/ssh-concierge-$(id -u)/hosts.conf"
+        CONFIG="${TMPDIR:-/tmp}/ssh-concierge-$(id -u)/hosts.conf"
     fi
 fi
 TTL="${TTL:-3600}"
