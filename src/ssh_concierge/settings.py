@@ -48,6 +48,8 @@ class Settings:
     ttl: int
     op_timeout: int
     config_file: Path | None  # Path to the config file that was loaded (None = defaults)
+    askpass_password: tuple[str, ...] = ('*assword*',)
+    askpass_otp: tuple[str, ...] = ()
 
     @property
     def hosts_file(self) -> Path:
@@ -80,6 +82,10 @@ class Settings:
                 return str(self.keys_dir)
             case 'config_file':
                 return str(self.config_file) if self.config_file else ''
+            case 'askpass_password':
+                return ', '.join(self.askpass_password)
+            case 'askpass_otp':
+                return ', '.join(self.askpass_otp)
             case _:
                 raise KeyError(f'unknown directive: {directive}')
 
@@ -92,11 +98,13 @@ class Settings:
         'keys_dir',
         'ttl',
         'op_timeout',
+        'askpass_password',
+        'askpass_otp',
     )
 
 
 # Directives that users can set in the config file
-_CONFIGURABLE = {'runtime_dir', 'askpass_dir', 'ttl', 'op_timeout'}
+_CONFIGURABLE = {'runtime_dir', 'askpass_dir', 'ttl', 'op_timeout', 'askpass'}
 
 _DEFAULTS = {
     'ttl': 3600,
@@ -134,10 +142,16 @@ def load_settings() -> Settings:
     ttl = int(raw.get('ttl', _DEFAULTS['ttl']))
     op_timeout = int(raw.get('op_timeout', _DEFAULTS['op_timeout']))
 
+    askpass_section = raw.get('askpass', {})
+    askpass_password = tuple(askpass_section.get('password', ['*assword*']))
+    askpass_otp = tuple(askpass_section.get('otp', []))
+
     return Settings(
         runtime_dir=runtime_dir,
         askpass_dir=askpass_dir,
         ttl=ttl,
         op_timeout=op_timeout,
         config_file=config_file,
+        askpass_password=askpass_password,
+        askpass_otp=askpass_otp,
     )

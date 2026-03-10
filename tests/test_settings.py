@@ -135,6 +135,54 @@ class TestLoadSettings:
 
         assert settings.runtime_dir == Path('/tmp/ssh-concierge-1000')
 
+    def test_askpass_defaults_when_no_section(self, tmp_path: Path):
+        with patch('ssh_concierge.settings._find_config_file', return_value=None):
+            with patch.dict(os.environ, {'XDG_RUNTIME_DIR': str(tmp_path / 'run')}):
+                settings = load_settings()
+
+        assert settings.askpass_password == ('*assword*',)
+        assert settings.askpass_otp == ()
+
+    def test_askpass_from_config(self, tmp_path: Path):
+        config_file = tmp_path / 'config.toml'
+        config_file.write_text(
+            '[askpass]\n'
+            'password = ["*assword*", "*ASSWORD*"]\n'
+            'otp = ["*erification*code*", "*one-time*"]\n'
+        )
+
+        with patch('ssh_concierge.settings._find_config_file', return_value=config_file):
+            settings = load_settings()
+
+        assert settings.askpass_password == ('*assword*', '*ASSWORD*')
+        assert settings.askpass_otp == ('*erification*code*', '*one-time*')
+
+    def test_askpass_empty_password_list(self, tmp_path: Path):
+        config_file = tmp_path / 'config.toml'
+        config_file.write_text(
+            '[askpass]\n'
+            'password = []\n'
+        )
+
+        with patch('ssh_concierge.settings._find_config_file', return_value=config_file):
+            settings = load_settings()
+
+        assert settings.askpass_password == ()
+        assert settings.askpass_otp == ()
+
+    def test_askpass_section_not_flagged_as_unknown(self, tmp_path: Path, capsys):
+        config_file = tmp_path / 'config.toml'
+        config_file.write_text(
+            '[askpass]\n'
+            'password = ["*assword*"]\n'
+        )
+
+        with patch('ssh_concierge.settings._find_config_file', return_value=config_file):
+            load_settings()
+
+        err = capsys.readouterr().err
+        assert 'unknown' not in err.lower()
+
 
 class TestSettingsGet:
     def _settings(self, tmp_path: Path) -> Settings:
@@ -164,6 +212,12 @@ class TestSettingsGet:
             ttl=3600, op_timeout=120, config_file=None,
         )
         assert s.get('config_file') == ''
+
+    def test_get_askpass_password(self, tmp_path: Path):
+        assert self._settings(tmp_path).get('askpass_password') == '*assword*'
+
+    def test_get_askpass_otp_empty(self, tmp_path: Path):
+        assert self._settings(tmp_path).get('askpass_otp') == ''
 
     def test_get_unknown_raises(self, tmp_path: Path):
         with pytest.raises(KeyError):

@@ -135,6 +135,37 @@ class TestResolveFields:
         assert result == {'password': 'secret123'}
 
     @patch('ssh_concierge.wrap.OnePassword')
+    def test_otp_resolved_at_ssh_time(self, mock_op_cls):
+        mock_op = mock_op_cls.return_value
+        mock_op.read.side_effect = lambda ref, cache_only=False: {
+            'op://V/I/password': 'secret',
+            'op://V/I/one-time password': '123456',
+        }.get(ref)
+        entry = {
+            'fields': {
+                'password': {'original': 'ops://V/I/password', 'resolved': None, 'sensitive': True},
+                'otp': {'original': 'ops://V/I/one-time password', 'resolved': None, 'sensitive': True},
+            },
+        }
+        result = _resolve_fields(entry)
+        assert result == {'password': 'secret', 'otp': '123456'}
+
+    @patch('ssh_concierge.wrap.OnePassword')
+    def test_otp_failure_non_critical_in_resolve(self, mock_op_cls):
+        """OTP resolution failure doesn't prevent password from resolving."""
+        mock_op = mock_op_cls.return_value
+        mock_op.read.side_effect = lambda ref, cache_only=False: 'secret' if ref == 'op://V/I/password' else None
+        entry = {
+            'fields': {
+                'password': {'original': 'ops://V/I/password', 'resolved': None, 'sensitive': True},
+                'otp': {'original': 'ops://V/I/one-time password', 'resolved': None, 'sensitive': True},
+            },
+        }
+        result = _resolve_fields(entry)
+        assert result == {'password': 'secret'}
+        assert 'otp' not in result
+
+    @patch('ssh_concierge.wrap.OnePassword')
     def test_password_failure_returns_none(self, mock_op_cls):
         mock_op = mock_op_cls.return_value
         mock_op.read.return_value = None
@@ -463,3 +494,171 @@ class TestMainNewFormat:
 
         # No password → falls through to execv
         mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh', 'myhost'])
+
+
+class TestMainPromptOverrides:
+    """Tests for per-host prompt override wiring."""
+
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.os.execve')
+    @patch('ssh_concierge.wrap.create_askpass', return_value={'SSH_ASKPASS': '/tmp/ap', 'SSH_ASKPASS_REQUIRE': 'force'})
+    @patch('ssh_concierge.wrap.OnePassword')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_per_host_password_prompt_passed(self, mock_find, mock_op_cls, mock_askpass, mock_execve, mock_execv, tmp_path: Path):
+        mock_op = mock_op_cls.return_value
+        mock_op.read.return_value = 'secret'
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://v/i/pw', 'resolved': None, 'sensitive': True},
+                },
+                'password_prompt': '*enter credentials*',
+            },
+        }))
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
+                main()
+
+        mock_askpass.assert_called_once()
+        assert mock_askpass.call_args[1]['pw_prompt'] == '*enter credentials*'
+
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.os.execve')
+    @patch('ssh_concierge.wrap.create_askpass', return_value={'SSH_ASKPASS': '/tmp/ap', 'SSH_ASKPASS_REQUIRE': 'force'})
+    @patch('ssh_concierge.wrap.OnePassword')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_per_host_otp_prompt_passed(self, mock_find, mock_op_cls, mock_askpass, mock_execve, mock_execv, tmp_path: Path):
+        mock_op = mock_op_cls.return_value
+        mock_op.read.return_value = 'secret'
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://v/i/pw', 'resolved': None, 'sensitive': True},
+                },
+                'otp_prompt': '*verification*',
+            },
+        }))
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
+                main()
+
+        mock_askpass.assert_called_once()
+        assert mock_askpass.call_args[1]['otp_prompt'] == '*verification*'
+
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.os.execve')
+    @patch('ssh_concierge.wrap.create_askpass', return_value={'SSH_ASKPASS': '/tmp/ap', 'SSH_ASKPASS_REQUIRE': 'force'})
+    @patch('ssh_concierge.wrap.OnePassword')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_otp_value_passed_to_askpass(self, mock_find, mock_op_cls, mock_askpass, mock_execve, mock_execv, tmp_path: Path):
+        mock_op = mock_op_cls.return_value
+        mock_op.read.side_effect = lambda ref, cache_only=False: {'op://v/i/pw': 'secret', 'op://v/i/otp': '123456'}.get(ref)
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://v/i/pw', 'resolved': None, 'sensitive': True},
+                    'otp': {'original': 'ops://v/i/otp', 'resolved': None, 'sensitive': True},
+                },
+            },
+        }))
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
+                main()
+
+        mock_askpass.assert_called_once()
+        assert mock_askpass.call_args[0][0] == 'secret'
+        assert mock_askpass.call_args[1]['otp'] == '123456'
+
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.os.execve')
+    @patch('ssh_concierge.wrap.create_askpass', return_value={'SSH_ASKPASS': '/tmp/ap', 'SSH_ASKPASS_REQUIRE': 'force'})
+    @patch('ssh_concierge.wrap.OnePassword')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_otp_failure_non_critical(self, mock_find, mock_op_cls, mock_askpass, mock_execve, mock_execv, tmp_path: Path):
+        """OTP resolution failure still allows password injection."""
+        mock_op = mock_op_cls.return_value
+        mock_op.read.side_effect = lambda ref, cache_only=False: 'secret' if ref == 'op://v/i/pw' else None
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://v/i/pw', 'resolved': None, 'sensitive': True},
+                    'otp': {'original': 'ops://v/i/otp', 'resolved': None, 'sensitive': True},
+                },
+            },
+        }))
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
+                main()
+
+        mock_askpass.assert_called_once()
+        assert mock_askpass.call_args[0][0] == 'secret'
+        assert mock_askpass.call_args[1]['otp'] is None
+        mock_execve.assert_called_once()
+
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.os.execve')
+    @patch('ssh_concierge.wrap.create_askpass', return_value={'SSH_ASKPASS': '/tmp/ap', 'SSH_ASKPASS_REQUIRE': 'force'})
+    @patch('ssh_concierge.wrap.OnePassword')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_no_prompt_overrides_passes_none(self, mock_find, mock_op_cls, mock_askpass, mock_execve, mock_execv, tmp_path: Path):
+        mock_op = mock_op_cls.return_value
+        mock_op.read.return_value = 'secret'
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://v/i/pw', 'resolved': None, 'sensitive': True},
+                },
+            },
+        }))
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
+                main()
+
+        mock_askpass.assert_called_once()
+        assert mock_askpass.call_args[1]['pw_prompt'] is None
+        assert mock_askpass.call_args[1]['otp_prompt'] is None
+
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.os.execve')
+    @patch('ssh_concierge.wrap.create_askpass', return_value={'SSH_ASKPASS': '/tmp/ap', 'SSH_ASKPASS_REQUIRE': 'force'})
+    @patch('ssh_concierge.wrap.OnePassword')
+    @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
+    def test_global_patterns_passed_from_settings(self, mock_find, mock_op_cls, mock_askpass, mock_execve, mock_execv, tmp_path: Path):
+        mock_op = mock_op_cls.return_value
+        mock_op.read.return_value = 'secret'
+        hd_file = tmp_path / 'hostdata.json'
+        hd_file.write_text(json.dumps({
+            'myhost': {
+                'fields': {
+                    'password': {'original': 'ops://v/i/pw', 'resolved': None, 'sensitive': True},
+                },
+            },
+        }))
+
+        settings = Settings(
+            runtime_dir=tmp_path,
+            askpass_dir=tmp_path,
+            ttl=3600,
+            op_timeout=120,
+            config_file=None,
+            askpass_password=('*assword*', '*ASSWORD*'),
+            askpass_otp=('*erification*',),
+        )
+
+        with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
+            with patch('ssh_concierge.wrap.load_settings', return_value=settings):
+                main()
+
+        mock_askpass.assert_called_once()
+        assert mock_askpass.call_args[1]['password_patterns'] == ('*assword*', '*ASSWORD*')
+        assert mock_askpass.call_args[1]['otp_patterns'] == ('*erification*',)

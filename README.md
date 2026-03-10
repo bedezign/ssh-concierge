@@ -7,9 +7,9 @@ Stop maintaining `~/.ssh/config` by hand. ssh-concierge reads host configuration
 ## Why
 
 - **Single source of truth** — SSH key + host config live together in 1Password
-- **Zero-touch connections** — passwords injected automatically via `SSH_ASKPASS`, no prompts
+- **Zero-touch connections** — passwords and OTP codes injected automatically via `SSH_ASKPASS`, no prompts
 - **Fast** — sub-millisecond on the hot path (99% of connections hit a simple file-age check, no Python)
-- **Safe** — never blocks SSH, never modifies `~/.ssh/config`, always exits 0
+- **Safe** — never blocks SSH, never modifies `~/.ssh/config`, always exits 0. Sensitive values (passwords, OTPs) are resolved at connection time and passed via environment variables — never written to disk
 - **Gradual adoption** — coexists with your existing static SSH config files
 
 ## vs 1Password SSH Bookmarks
@@ -20,7 +20,7 @@ Stop maintaining `~/.ssh/config` by hand. ssh-concierge reads host configuration
 |---|---|---|
 | Key-to-host mapping | Yes | Yes |
 | Generate SSH config | Yes (host + key only) | Yes (full: user, port, any directive) |
-| Password injection | No | Yes (via `SSH_ASKPASS`) |
+| Password + OTP injection | No | Yes (via `SSH_ASKPASS`) |
 | Clipboard templates | No | Yes |
 | `op://` references in fields | No | Yes (with `\|\|` fallback chains) |
 | Brace expansion / regex | No | Yes (`worker{1..8}`, `s/pattern/replace/`) |
@@ -81,7 +81,7 @@ Any 1Password item — Server, Login, Secure Note — can manage a host. Tag it 
 
 - **Multiple hosts per key** — add multiple `SSH Config: <name>` sections to one item
 - **Any item type as host** — tag non-key items `SSH Host` for password-auth or agent-based hosts
-- **Transparent password auth** — `op://` reference in `password` field, SSH/SCP connects without prompts
+- **Transparent password auth** — `op://` reference in `password` field, SSH/SCP connects without prompts. Optional `otp` field for TOTP two-factor auth
 - **Clipboard injection** — auto-copy commands/passwords to clipboard on connect (e.g., `sudo -i\n{password}`)
 - **`op://` references in any field** — hostname, user, or any directive can reference 1Password values
 - **`||` fallback chains** — `op://./hostname||10.0.0.1` — try the reference, fall back to a literal
@@ -119,7 +119,7 @@ Creates a venv, installs the package, and symlinks binaries to `~/.local/bin/`. 
 
 ### SSH/SCP wrappers (optional)
 
-The installer also creates `~/.local/bin/ssh` and `~/.local/bin/scp` that shadow the system binaries. These wrappers are only needed for **password injection** and **clipboard** features — they look up the host in `hostdata.json`, resolve passwords via `op read`, and set `SSH_ASKPASS` before calling the real `ssh`/`scp`.
+The installer also creates `~/.local/bin/ssh` and `~/.local/bin/scp` that shadow the system binaries. These wrappers are only needed for **password/OTP injection** and **clipboard** features — they look up the host in `hostdata.json`, resolve passwords and OTP codes via `op read`, and set `SSH_ASKPASS` before calling the real `ssh`/`scp`.
 
 If you only use SSH key authentication (via the 1Password agent), you don't need the wrappers. Remove them with:
 

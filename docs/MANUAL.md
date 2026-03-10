@@ -95,9 +95,12 @@ Add a section named **SSH Config** with these fields:
 | `port` | No | SSH port. |
 | `user` | No | Login user. |
 | `password` | No | Password for auth. See [Password authentication](#password-authentication). |
+| `otp` | No | OTP/TOTP value for two-factor auth. See [OTP injection](#otp-injection). |
 | `clipboard` | No | Template copied to clipboard on connect. See [Clipboard](#clipboard). |
 | `key` | No | Cross-item SSH key reference. See [Cross-item key references](#cross-item-key-references). |
 | `on` | No | Per-host filter. See [Per-host filtering](#per-host-filtering). |
+| `password_prompt` | No | Shell glob overriding which SSH prompts get the password. See [Prompt matching](#prompt-matching). |
+| `otp_prompt` | No | Shell glob for OTP prompts on this host. See [Prompt matching](#prompt-matching). |
 | Any SSH directive | No | Added verbatim. E.g., `ProxyJump`, `ForwardAgent`, `LocalForward`. |
 | Any other name | No | Stored as a custom field. See [Custom fields](#custom-fields). |
 
@@ -313,7 +316,7 @@ This tries three sources: the item's own hostname, a backup reference, then a ha
 
 A field is **sensitive** if:
 - Any segment in the `||` chain uses the `ops://` prefix (explicit marker), OR
-- The field name matches: `password`, `passwd`, `pass`, `secret`, `token`
+- The field name matches: `password`, `passwd`, `pass`, `secret`, `token`, `otp`
 
 Sensitive fields are **never** stored resolved on disk. They're kept as raw `op://` references in `hostdata.json` and resolved at SSH connection time by the wrapper.
 
@@ -336,8 +339,8 @@ Hosts that require password auth can store an `op://` reference in the `password
 3. It looks up the hostname in `hostdata.json`
 4. For each field, it uses the cached resolved value if available, or calls `op read` to resolve sensitive fields on the spot
 5. If a `clipboard` template is present, placeholders are resolved and the result is copied to the system clipboard
-6. If a `password` is present, it passes the password via the `__SSH_CONCIERGE_PW` environment variable and sets `SSH_ASKPASS` to a generic askpass script + `SSH_ASKPASS_REQUIRE=force`
-7. SSH calls the askpass script, which outputs the password from the environment variable — no password is ever written to disk
+6. If a `password` is present, it passes the password via `__SSH_CONCIERGE_PW` (and `otp` via `__SSH_CONCIERGE_OTP` if configured) and sets `SSH_ASKPASS` to a generic askpass script + `SSH_ASKPASS_REQUIRE=force`
+7. SSH calls the askpass script for each prompt — password prompts get the password, OTP prompts get the OTP code (if available), everything else passes through to the terminal. No secrets are ever written to disk
 
 If any step fails (`op read` fails, 1Password is locked), the wrapper falls back to normal interactive auth.
 
@@ -347,8 +350,69 @@ If any step fails (`op read` fails, 1Password is locked), the wrapper falls back
 - Non-sensitive fields cache their resolved values for performance (avoids `op read` on every connection)
 - The password is passed via an environment variable (`__SSH_CONCIERGE_PW`), never written to disk
 - The askpass script is a static generic file (created once in `askpass_dir`, defaults to `runtime_dir`) with `0700` permissions — it only reads from the environment
-- Non-password prompts (host key verification, passphrases) are passed through to the terminal — the wrapper never alters SSH behavior beyond password injection
+- Unrecognized prompts (host key verification, passphrases) are passed through to the terminal — the wrapper never alters SSH behavior beyond password/OTP injection
 - On systems where `askpass_dir` is on a `noexec` filesystem (common with `/tmp` on RHEL/CentOS), set `askpass_dir` to an executable filesystem in your config file. `--generate` warns if the askpass directory is on a noexec mount
+
+### Prompt matching
+
+SSH calls the askpass script for **all** prompts when `SSH_ASKPASS_REQUIRE=force` is set (not just passwords). The askpass script uses shell glob patterns to decide what to do with each prompt:
+
+- **Password patterns** — auto-answered with the injected password
+- **OTP patterns** — auto-answered with the OTP value if an `otp` field is configured, otherwise falls through to the terminal
+- **Catch-all** — anything else is passed through to the terminal, prefixed with `[unrecognized prompt]`
+
+**Global patterns** are configured in `config.toml` and baked into the generated askpass script:
+
+```toml
+[askpass]
+password = ["*assword*"]
+otp = ["*erification*code*", "*one-time*"]
+```
+
+Default: `password = ["*assword*"]`, `otp = []`.
+
+Multiple patterns for the same action are joined with `|` in the shell `case` statement.
+
+Patterns use **shell glob syntax** (as used in `case` statements):
+
+| Wildcard | Matches | Example |
+|----------|---------|---------|
+| `*` | Any string (including empty) | `*assword*` matches `Password:`, `user's password:` |
+| `?` | Any single character | `code?` matches `code:` but not `codes:` |
+| `[...]` | Any character in the set | `[Pp]assword*` matches `Password:` and `password:` |
+| `[!...]` | Any character NOT in the set | `[!0-9]*` matches anything not starting with a digit |
+
+The pattern is matched against the full prompt string that SSH sends to the askpass script (e.g., `user@host's password: `, `Verification code: `).
+
+**Per-host overrides** can be set in the 1Password SSH Config section:
+
+| Field | Description |
+|-------|-------------|
+| `password_prompt` | Shell glob overriding which prompts get the password for this host |
+| `otp_prompt` | Shell glob for OTP prompts on this host |
+
+Per-host overrides are passed as environment variables (`__SSH_CONCIERGE_PW_PROMPT`, `__SSH_CONCIERGE_OTP_PROMPT`) and checked **before** the global patterns. This lets you handle servers with non-standard PAM prompts (e.g., `Enter credentials:` instead of `Password:`).
+
+### OTP injection
+
+Hosts that require a one-time password (TOTP) after the password prompt can store an `op://` reference in the `otp` field. The wrapper resolves the current TOTP code at connection time and passes it to the askpass script via `__SSH_CONCIERGE_OTP`.
+
+**Recommended**: Use `op://./one-time password` to reference the item's own TOTP field, or `ops://Vault/Item/one-time password` for a cross-item reference. For TOTP, 1Password stores the seed — the CLI resolves it to the current code at read time.
+
+The `otp` field is always treated as sensitive (never cached resolved to disk), regardless of whether you use `op://` or `ops://`.
+
+For the OTP to be injected automatically, you also need matching OTP prompt patterns — either globally in `config.toml` or per-host via `otp_prompt`. Without matching patterns, the OTP prompt falls through to the terminal even if the `otp` field is configured.
+
+If OTP resolution fails (1Password locked, reference invalid), the connection still proceeds — the OTP prompt falls through to the terminal and the user types the code manually.
+
+**Example** (password + OTP):
+
+| Field | Value |
+|-------|-------|
+| `aliases` | `secure-server` |
+| `password` | `op://./password` |
+| `otp` | `op://./one-time password` |
+| `otp_prompt` | `*erification*code*` |
 
 ### Setup
 
@@ -450,7 +514,7 @@ Running `ssh-concierge --generate` on `home-pc` skips this host entirely.
 
 ## Custom fields
 
-Any field in the SSH Config section that isn't a known field (`aliases`, `hostname`, `port`, `user`, `password`, `clipboard`, `key`, `on`) and isn't a valid SSH directive (like `ProxyJump`, `ForwardAgent`, etc.) is stored as a **custom field**.
+Any field in the SSH Config section that isn't a known field (`aliases`, `hostname`, `port`, `user`, `password`, `otp`, `clipboard`, `key`, `on`, `password_prompt`, `otp_prompt`) and isn't a valid SSH directive (like `ProxyJump`, `ForwardAgent`, etc.) is stored as a **custom field**.
 
 Custom fields are not written to `hosts.conf` (they're not SSH directives), but they are:
 
@@ -522,6 +586,9 @@ ssh-concierge works without any configuration file — all settings have sensibl
 | `askpass_dir` | Same as `runtime_dir` | Where the askpass script is stored |
 | `ttl` | `3600` | Cache TTL in seconds |
 | `op_timeout` | `120` | 1Password CLI timeout in seconds |
+| `[askpass]` | *(section)* | Prompt matching patterns for the askpass script |
+| `askpass.password` | `["*assword*"]` | Shell glob patterns that trigger password injection |
+| `askpass.otp` | `[]` | Shell glob patterns for OTP prompts (falls through to tty unless `__SSH_CONCIERGE_OTP` is set) |
 
 ### Example
 
@@ -529,6 +596,10 @@ ssh-concierge works without any configuration file — all settings have sensibl
 # ~/.config/ssh-concierge/config.toml
 runtime_dir = "/run/user/1000/ssh-concierge"
 ttl = 7200
+
+[askpass]
+password = ["*assword*"]
+otp = ["*erification*code*", "*one-time*"]
 ```
 
 ### Querying config
@@ -541,7 +612,7 @@ ssh-concierge --config hosts_file   # Single value
 ssh-concierge --config ttl          # "3600"
 ```
 
-Available directives: `config_file`, `runtime_dir`, `askpass_dir`, `hosts_file`, `hostdata_file`, `keys_dir`, `ttl`, `op_timeout`.
+Available directives: `config_file`, `runtime_dir`, `askpass_dir`, `hosts_file`, `hostdata_file`, `keys_dir`, `ttl`, `op_timeout`, `askpass_password`, `askpass_otp`.
 
 The shell entry point uses `--config` internally to get paths and TTL from Python, keeping a single source of truth.
 

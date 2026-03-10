@@ -62,6 +62,9 @@ class TestIsSensitive:
     def test_token_field_name(self):
         assert is_sensitive('anything', 'token') is True
 
+    def test_otp_field_name(self):
+        assert is_sensitive('anything', 'otp') is True
+
     def test_case_insensitive_field_name(self):
         assert is_sensitive('anything', 'Password') is True
         assert is_sensitive('anything', 'TOKEN') is True
@@ -214,6 +217,14 @@ class TestFieldValue:
 
     def test_from_raw_sensitive_by_ops(self):
         fv = FieldValue.from_raw('ops://Vault/Item/field', 'hostname')
+        assert fv.sensitive is True
+
+    def test_from_raw_otp_sensitive_by_name(self):
+        fv = FieldValue.from_raw('op://Vault/Item/one-time password', 'otp')
+        assert fv.sensitive is True
+
+    def test_from_raw_otp_sensitive_with_ops(self):
+        fv = FieldValue.from_raw('ops://Vault/Item/one-time password', 'otp')
         assert fv.sensitive is True
 
     def test_from_raw_template(self):

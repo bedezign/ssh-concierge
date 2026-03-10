@@ -144,11 +144,16 @@ def main() -> None:
                 clipboard_text = resolve_clipboard(entry['clipboard'], resolved)
                 copy_to_clipboard(clipboard_text)
 
-            # Password: askpass injection via exec (no subprocess wait)
+            # Password/OTP: askpass injection via exec (no subprocess wait)
             if resolved and resolved.get('password'):
                 env_vars = create_askpass(
                     resolved['password'],
                     askpass_dir=settings.askpass_dir,
+                    password_patterns=settings.askpass_password,
+                    otp_patterns=settings.askpass_otp,
+                    pw_prompt=entry.get('password_prompt'),
+                    otp_prompt=entry.get('otp_prompt'),
+                    otp=resolved.get('otp'),
                 )
                 env = {**os.environ, **env_vars}
                 os.execve(real_binary, [tool, *args], env)

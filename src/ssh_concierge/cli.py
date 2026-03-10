@@ -118,6 +118,7 @@ def resolve_host_fields(
         port=_resolve_optional('port', host.port),
         user=_resolve_optional('user', host.user),
         password=_resolve_optional('password', host.password),
+        otp=_resolve_optional('otp', host.otp),
         extra_directives={k: _resolve_field(k, fv) for k, fv in host.extra_directives.items()},
         custom_fields={k: _resolve_field(k, fv) for k, fv in host.custom_fields.items()},
     )
@@ -138,6 +139,10 @@ def _build_hostdata_entry(host: HostConfig) -> dict | None:
         entry['clipboard'] = host.clipboard
     if host.key_ref:
         entry['key'] = host.key_ref
+    if host.password_prompt:
+        entry['password_prompt'] = host.password_prompt
+    if host.otp_prompt:
+        entry['otp_prompt'] = host.otp_prompt
     if fields:
         entry['fields'] = fields
 
@@ -148,6 +153,7 @@ def _iter_host_fields(host: HostConfig):
     """Yield (name, FieldValue) for all resolvable fields on a HostConfig."""
     named = [
         ('password', host.password),
+        ('otp', host.otp),
         ('hostname', host.hostname),
         ('port', host.port),
         ('user', host.user),
@@ -483,6 +489,14 @@ def cmd_debug(alias: str, settings: Settings) -> None:
                     print(f'    #   {name}: {original}')
                 else:
                     print(f'    #   {name}: {original}  ⚠ UNRESOLVED')
+
+        # Prompt overrides
+        pw_prompt = entry.get('password_prompt')
+        if pw_prompt:
+            print(f'    # Password prompt: {pw_prompt}')
+        otp_prompt = entry.get('otp_prompt')
+        if otp_prompt:
+            print(f'    # OTP prompt: {otp_prompt}')
 
         # Clipboard
         clipboard = entry.get('clipboard')

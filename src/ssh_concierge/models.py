@@ -26,9 +26,14 @@ class HostConfig:
     port: FieldValue | None = None
     user: FieldValue | None = None
     password: FieldValue | None = None
+    otp: FieldValue | None = None
 
     # Template string, not a FieldValue (uses {field_name} placeholders)
     clipboard: str | None = None
+
+    # Per-host prompt overrides (shell glob patterns)
+    password_prompt: str | None = None
+    otp_prompt: str | None = None
 
     # SSH directives and custom data fields
     extra_directives: dict[str, FieldValue] = field(default_factory=dict)

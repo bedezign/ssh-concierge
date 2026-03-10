@@ -17,7 +17,7 @@ CHAIN_SEPARATOR = '||'
 TEMPLATE_OPEN = '{{'
 TEMPLATE_CLOSE = '}}'
 
-SENSITIVE_FIELD_NAMES = frozenset({'password', 'passwd', 'pass', 'secret', 'token'})
+SENSITIVE_FIELD_NAMES = frozenset({'password', 'passwd', 'pass', 'secret', 'token', 'otp'})
 
 
 def _is_reference(value: str) -> bool:
