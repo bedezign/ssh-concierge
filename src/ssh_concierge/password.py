@@ -85,7 +85,20 @@ def resolve_password(
     return resolve_chain(raw_password, op, vault_id, item_id)
 
 
-_ASKPASS_SCRIPT = '#!/bin/sh\nprintf \'%s\\n\' "$__SSH_CONCIERGE_PW"\n'
+_ASKPASS_SCRIPT = """\
+#!/bin/sh
+# SSH calls askpass for ALL prompts when SSH_ASKPASS_REQUIRE=force.
+# Password prompts get the injected value; everything else (host key
+# verification, passphrase) is passed through to the user's terminal.
+case "$1" in
+    *assword*) printf '%s\\n' "$__SSH_CONCIERGE_PW" ;;
+    *)
+        printf '%s' "$1" >/dev/tty
+        IFS= read -r reply </dev/tty
+        printf '%s\\n' "$reply"
+        ;;
+esac
+"""
 
 
 def create_askpass(password: str, *, askpass_dir: Path | None = None) -> dict[str, str]:

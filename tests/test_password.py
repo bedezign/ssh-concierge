@@ -192,13 +192,13 @@ class TestCreateAskpass:
         assert env2['__SSH_CONCIERGE_PW'] == 'pw2'
 
     def test_script_outputs_password(self, tmp_path):
-        """Running the script with __SSH_CONCIERGE_PW set outputs the password."""
+        """Running the script with a password prompt outputs the password."""
         import subprocess
 
         pw = 'testpw123'
         env = create_askpass(pw, askpass_dir=tmp_path)
         result = subprocess.run(
-            [env['SSH_ASKPASS']],
+            [env['SSH_ASKPASS'], "user@host's password: "],
             capture_output=True,
             text=True,
             env={'__SSH_CONCIERGE_PW': pw},
@@ -212,9 +212,25 @@ class TestCreateAskpass:
         pw = '$HOME `whoami` "quoted" \\backslash'
         env = create_askpass(pw, askpass_dir=tmp_path)
         result = subprocess.run(
-            [env['SSH_ASKPASS']],
+            [env['SSH_ASKPASS'], 'Password: '],
             capture_output=True,
             text=True,
             env={'__SSH_CONCIERGE_PW': pw},
         )
         assert result.stdout.rstrip('\n') == pw
+
+    def test_non_password_prompt_passes_through(self, tmp_path):
+        """Non-password prompts are forwarded to the terminal via /dev/tty."""
+        import subprocess
+
+        env = create_askpass('secret', askpass_dir=tmp_path)
+        # Simulate a host key prompt — no /dev/tty in test, so the script
+        # will fail to write to /dev/tty and exit non-zero.
+        result = subprocess.run(
+            [env['SSH_ASKPASS'], 'Are you sure you want to continue connecting (yes/no)? '],
+            capture_output=True,
+            text=True,
+            env={'__SSH_CONCIERGE_PW': 'secret'},
+        )
+        # Should NOT output the password for non-password prompts
+        assert 'secret' not in result.stdout

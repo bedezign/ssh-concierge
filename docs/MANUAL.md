@@ -336,8 +336,8 @@ Hosts that require password auth can store an `op://` reference in the `password
 3. It looks up the hostname in `hostdata.json`
 4. For each field, it uses the cached resolved value if available, or calls `op read` to resolve sensitive fields on the spot
 5. If a `clipboard` template is present, placeholders are resolved and the result is copied to the system clipboard
-6. If a `password` is present, it creates a temporary askpass script and sets `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`
-7. SSH uses the askpass script instead of prompting interactively
+6. If a `password` is present, it passes the password via the `__SSH_CONCIERGE_PW` environment variable and sets `SSH_ASKPASS` to a generic askpass script + `SSH_ASKPASS_REQUIRE=force`
+7. SSH calls the askpass script, which outputs the password from the environment variable — no password is ever written to disk
 
 If any step fails (`op read` fails, 1Password is locked), the wrapper falls back to normal interactive auth.
 
@@ -345,8 +345,10 @@ If any step fails (`op read` fails, 1Password is locked), the wrapper falls back
 
 - Sensitive fields (passwords, `ops://` references) are **never** stored resolved in `hostdata.json`
 - Non-sensitive fields cache their resolved values for performance (avoids `op read` on every connection)
-- The askpass temp script is created with `0700` permissions and deleted after SSH exits
-- The askpass script is created in `askpass_dir` (defaults to `runtime_dir`). On systems where `/tmp` is mounted `noexec` (common on RHEL/CentOS), set `askpass_dir` to an executable filesystem in your config file. `--generate` warns if the askpass directory is on a noexec mount
+- The password is passed via an environment variable (`__SSH_CONCIERGE_PW`), never written to disk
+- The askpass script is a static generic file (created once in `askpass_dir`, defaults to `runtime_dir`) with `0700` permissions — it only reads from the environment
+- Non-password prompts (host key verification, passphrases) are passed through to the terminal — the wrapper never alters SSH behavior beyond password injection
+- On systems where `askpass_dir` is on a `noexec` filesystem (common with `/tmp` on RHEL/CentOS), set `askpass_dir` to an executable filesystem in your config file. `--generate` warns if the askpass directory is on a noexec mount
 
 ### Setup
 
@@ -517,7 +519,7 @@ ssh-concierge works without any configuration file — all settings have sensibl
 | Directive | Default | Description |
 |-----------|---------|-------------|
 | `runtime_dir` | `$XDG_RUNTIME_DIR/ssh-concierge` or `/tmp/ssh-concierge-$UID` | Where runtime files are generated |
-| `askpass_dir` | Same as `runtime_dir` | Where askpass temp scripts are created |
+| `askpass_dir` | Same as `runtime_dir` | Where the askpass script is stored |
 | `ttl` | `3600` | Cache TTL in seconds |
 | `op_timeout` | `120` | 1Password CLI timeout in seconds |
 
