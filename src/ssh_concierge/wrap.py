@@ -13,7 +13,7 @@ from typing import Any
 from ssh_concierge.argparse_ssh import extract_scp_host, extract_ssh_host
 from ssh_concierge.field import TEMPLATE_CLOSE, TEMPLATE_OPEN, resolve_chain
 from ssh_concierge.onepassword import OnePassword
-from ssh_concierge.password import askpass_env
+from ssh_concierge.password import create_askpass
 from ssh_concierge.settings import load_settings
 
 logger = logging.getLogger(__name__)
@@ -144,36 +144,16 @@ def main() -> None:
                 clipboard_text = resolve_clipboard(entry['clipboard'], resolved)
                 copy_to_clipboard(clipboard_text)
 
-            # Password: askpass injection
+            # Password: askpass injection via exec (no subprocess wait)
             if resolved and resolved.get('password'):
-                rc = _run_with_askpass(
-                    real_binary, tool, args, resolved['password'],
+                env_vars = create_askpass(
+                    resolved['password'],
                     askpass_dir=settings.askpass_dir,
                 )
-                sys.exit(rc)
+                env = {**os.environ, **env_vars}
+                os.execve(real_binary, [tool, *args], env)
 
     # Fallback: exec real binary with original args
     os.execv(real_binary, [tool, *args])
 
 
-def _run_with_askpass(
-    real_binary: str,
-    tool: str,
-    args: list[str],
-    password: str,
-    *,
-    askpass_dir: Path | None = None,
-) -> int:
-    """Run the real binary with SSH_ASKPASS for password injection.
-
-    Uses subprocess.run (not exec) so the askpass temp script gets cleaned up.
-    SSH_ASKPASS_REQUIRE=force makes SSH use ASKPASS even with a TTY present,
-    so we don't need setsid (which would break PTY allocation).
-    """
-    with askpass_env(password, askpass_dir=askpass_dir) as env_vars:
-        env = {**os.environ, **env_vars}
-        result = subprocess.run(
-            [real_binary, *args],
-            env=env,
-        )
-        return result.returncode

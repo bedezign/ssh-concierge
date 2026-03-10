@@ -12,7 +12,7 @@ import pytest
 from ssh_concierge.onepassword import OnePassword, OpError
 from ssh_concierge.password import (
     ItemMeta,
-    askpass_env,
+    create_askpass,
     normalize_reference,
     resolve_password,
 )
@@ -166,43 +166,57 @@ class TestResolvePasswordFallbackChain:
         assert result == 'default-password'
 
 
-class TestAskpassEnv:
-    def test_yields_correct_env_vars(self):
-        with askpass_env('mypassword') as env:
+class TestCreateAskpass:
+    def test_returns_correct_env_vars(self):
+        env = create_askpass('mypassword')
+        try:
             assert 'SSH_ASKPASS' in env
             assert env['SSH_ASKPASS_REQUIRE'] == 'force'
             script = Path(env['SSH_ASKPASS'])
             assert script.exists()
             assert script.stat().st_mode & stat.S_IRWXU == stat.S_IRWXU
+        finally:
+            Path(env['SSH_ASKPASS']).unlink(missing_ok=True)
 
     def test_script_outputs_password(self):
-        with askpass_env('testpw123') as env:
+        env = create_askpass('testpw123')
+        try:
             content = Path(env['SSH_ASKPASS']).read_text()
             assert 'testpw123' in content
+        finally:
+            Path(env['SSH_ASKPASS']).unlink(missing_ok=True)
 
-    def test_cleans_up_on_exit(self):
-        with askpass_env('pw') as env:
-            script_path = env['SSH_ASKPASS']
-            assert Path(script_path).exists()
+    def test_script_self_deletes(self):
+        """Script deletes itself when executed."""
+        import subprocess
+
+        env = create_askpass('pw')
+        script_path = env['SSH_ASKPASS']
+        assert Path(script_path).exists()
+        subprocess.run([script_path], capture_output=True)
         assert not Path(script_path).exists()
 
     def test_password_with_special_chars(self):
         """Heredoc approach handles all special chars without escaping."""
         pw = 'p@ss"w$rd`test\\'
-        with askpass_env(pw) as env:
+        env = create_askpass(pw)
+        try:
             content = Path(env['SSH_ASKPASS']).read_text()
-            # The password appears literally in the heredoc (no escaping needed)
             assert pw in content
+        finally:
+            Path(env['SSH_ASKPASS']).unlink(missing_ok=True)
 
     def test_password_with_dollar_and_backtick(self):
         """Verify shell metacharacters are preserved literally."""
         import subprocess
 
         pw = '$HOME `whoami` "quoted" \\backslash'
-        with askpass_env(pw) as env:
-            result = subprocess.run(
-                [env['SSH_ASKPASS']],
-                capture_output=True,
-                text=True,
-            )
-            assert result.stdout.rstrip('\n') == pw
+        env = create_askpass(pw)
+        result = subprocess.run(
+            [env['SSH_ASKPASS']],
+            capture_output=True,
+            text=True,
+        )
+        assert result.stdout.rstrip('\n') == pw
+        # Script should have self-deleted
+        assert not Path(env['SSH_ASKPASS']).exists()

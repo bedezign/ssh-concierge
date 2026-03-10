@@ -11,7 +11,7 @@ from ssh_concierge.config import _safe_filename
 from ssh_concierge.expand import expand_host_config
 from ssh_concierge.models import HostConfig
 from ssh_concierge.onepassword import OnePassword, parse_item_to_host_configs
-from ssh_concierge.password import ItemMeta, askpass_env, resolve_password
+from ssh_concierge.password import ItemMeta, create_askpass, resolve_password
 
 
 def fetch_all_hosts(op: OnePassword) -> list[tuple[HostConfig, ItemMeta]]:
@@ -85,14 +85,14 @@ def deploy_key_to_host(
     print(f'Deploying key to {host.aliases[0]}...')
     try:
         if password:
-            with askpass_env(password) as env_vars:
-                env = {**os.environ, **env_vars}
-                result = subprocess.run(
-                    args,
-                    env=env,
-                    stdout=sys.stdout,
-                    stderr=sys.stderr,
-                )
+            env_vars = create_askpass(password)
+            env = {**os.environ, **env_vars}
+            result = subprocess.run(
+                args,
+                env=env,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
         else:
             result = subprocess.run(
                 args,

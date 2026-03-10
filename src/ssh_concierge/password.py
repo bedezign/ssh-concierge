@@ -6,10 +6,9 @@ import logging
 import os
 import stat
 import tempfile
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING
 
 from ssh_concierge.field import resolve_chain
 from ssh_concierge.opref import OP_PREFIX, OpRef
@@ -86,36 +85,35 @@ def resolve_password(
     return resolve_chain(raw_password, op, vault_id, item_id)
 
 
-@contextmanager
-def askpass_env(password: str, *, askpass_dir: Path | None = None) -> Iterator[dict[str, str]]:
-    """Context manager that creates a temporary SSH_ASKPASS script.
+def create_askpass(password: str, *, askpass_dir: Path | None = None) -> dict[str, str]:
+    """Create a self-deleting SSH_ASKPASS script.
 
-    Yields a dict of environment variables to merge into subprocess env:
-      - SSH_ASKPASS: path to the temp script
+    Returns a dict of environment variables to merge into the exec env:
+      - SSH_ASKPASS: path to the script
       - SSH_ASKPASS_REQUIRE: 'force' (bypass TTY check)
 
-    The script is cleaned up on exit.  Uses askpass_dir if provided,
-    otherwise falls back to a default under XDG_RUNTIME_DIR (avoiding
-    /tmp which may be mounted noexec on some systems).
+    The script deletes itself after outputting the password, so no cleanup
+    is needed by the caller.  Uses askpass_dir if provided, otherwise
+    falls back to XDG_RUNTIME_DIR (avoiding /tmp which may be noexec).
     """
     if askpass_dir is None:
         xdg = os.environ.get('XDG_RUNTIME_DIR')
         askpass_dir = Path(xdg) / 'ssh-concierge' if xdg else Path(tempfile.gettempdir())
     askpass_dir.mkdir(parents=True, exist_ok=True)
     fd, script_path = tempfile.mkstemp(prefix='askpass-', dir=askpass_dir)
-    try:
-        # Write the askpass script using a heredoc to avoid shell escaping issues.
-        # The delimiter is unlikely to appear in any password.
-        os.write(fd, f"#!/bin/sh\ncat <<'__SSH_CONCIERGE_PW__'\n{password}\n__SSH_CONCIERGE_PW__\n".encode())
-        os.close(fd)
-        os.chmod(script_path, stat.S_IRWXU)  # 0700
+    # Write the askpass script using a heredoc to avoid shell escaping issues.
+    # The script deletes itself after outputting the password.
+    os.write(fd, (
+        "#!/bin/sh\n"
+        "cat <<'__SSH_CONCIERGE_PW__'\n"
+        f"{password}\n"
+        "__SSH_CONCIERGE_PW__\n"
+        'rm -f "$0"\n'
+    ).encode())
+    os.close(fd)
+    os.chmod(script_path, stat.S_IRWXU)  # 0700
 
-        yield {
-            'SSH_ASKPASS': script_path,
-            'SSH_ASKPASS_REQUIRE': 'force',
-        }
-    finally:
-        try:
-            Path(script_path).unlink(missing_ok=True)
-        except OSError:
-            pass
+    return {
+        'SSH_ASKPASS': script_path,
+        'SSH_ASKPASS_REQUIRE': 'force',
+    }

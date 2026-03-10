@@ -13,7 +13,6 @@ import pytest
 from ssh_concierge.settings import Settings
 from ssh_concierge.wrap import (
     _resolve_fields,
-    _run_with_askpass,
     copy_to_clipboard,
     find_real_binary,
     lookup_hostdata,
@@ -258,30 +257,6 @@ class TestCopyToClipboard:
         assert 'not installed' in err.lower()
 
 
-class TestRunWithAskpass:
-    @patch('ssh_concierge.wrap.subprocess.run')
-    def test_calls_binary_with_askpass(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0)
-        rc = _run_with_askpass('/usr/bin/ssh', 'ssh', ['-v', 'myhost'], 'secret')
-        assert rc == 0
-
-        call_args = mock_run.call_args
-        cmd = call_args[0][0]
-        assert cmd[0] == '/usr/bin/ssh'
-        assert '-v' in cmd
-        assert 'myhost' in cmd
-
-        env = call_args[1]['env']
-        assert 'SSH_ASKPASS' in env
-        assert env['SSH_ASKPASS_REQUIRE'] == 'force'
-
-    @patch('ssh_concierge.wrap.subprocess.run')
-    def test_returns_exit_code(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=255)
-        rc = _run_with_askpass('/usr/bin/ssh', 'ssh', ['myhost'], 'pw')
-        assert rc == 255
-
-
 class TestMain:
     @patch('ssh_concierge.wrap.os.execv')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
@@ -291,10 +266,15 @@ class TestMain:
                 main()
         mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh', 'myhost'])
 
-    @patch('ssh_concierge.wrap._run_with_askpass', return_value=0)
+    # Mock both execve (password path) and execv (fallback path) — the mock execve
+    # returns normally instead of replacing the process, so without mocking execv
+    # execution falls through to the real os.execv and replaces the test process.
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.os.execve')
+    @patch('ssh_concierge.wrap.create_askpass', return_value={'SSH_ASKPASS': '/tmp/ap', 'SSH_ASKPASS_REQUIRE': 'force'})
     @patch('ssh_concierge.wrap.OnePassword')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
-    def test_with_password(self, mock_find, mock_op_cls, mock_run, tmp_path: Path):
+    def test_with_password(self, mock_find, mock_op_cls, mock_askpass, mock_execve, mock_execv, tmp_path: Path):
         mock_op = mock_op_cls.return_value
         mock_op.read.return_value = 'secret123'
         hd_file = tmp_path / 'hostdata.json'
@@ -308,13 +288,12 @@ class TestMain:
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
             with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
-                with pytest.raises(SystemExit) as exc_info:
-                    main()
-                assert exc_info.value.code == 0
+                main()
 
-        mock_run.assert_called_once()
-        args, kwargs = mock_run.call_args
-        assert args == ('/usr/bin/ssh', 'ssh', ['myhost'], 'secret123')
+        mock_askpass.assert_called_once()
+        assert mock_askpass.call_args[0][0] == 'secret123'
+        mock_execve.assert_called_once()
+        assert mock_execve.call_args[0][:2] == ('/usr/bin/ssh', ['ssh', 'myhost'])
 
     def test_no_real_binary_exits(self):
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
@@ -376,11 +355,14 @@ class TestMain:
         mock_clip.assert_called_once_with('hello\nworld')
         mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh', 'myhost'])
 
+    # See test_with_password for why both execv and execve must be mocked.
     @patch('ssh_concierge.wrap.copy_to_clipboard', return_value=True)
-    @patch('ssh_concierge.wrap._run_with_askpass', return_value=0)
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.os.execve')
+    @patch('ssh_concierge.wrap.create_askpass', return_value={'SSH_ASKPASS': '/tmp/ap', 'SSH_ASKPASS_REQUIRE': 'force'})
     @patch('ssh_concierge.wrap.OnePassword')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
-    def test_password_and_clipboard(self, mock_find, mock_op_cls, mock_run, mock_clip, tmp_path: Path):
+    def test_password_and_clipboard(self, mock_find, mock_op_cls, mock_askpass, mock_execve, mock_execv, mock_clip, tmp_path: Path):
         """Host with both password and clipboard."""
         mock_op = mock_op_cls.return_value
         mock_op.read.return_value = 'secret'
@@ -396,23 +378,24 @@ class TestMain:
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
             with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
-                with pytest.raises(SystemExit) as exc_info:
-                    main()
-                assert exc_info.value.code == 0
+                main()
 
         mock_clip.assert_called_once_with('sudo -i\nsecret\n')
-        mock_run.assert_called_once()
-        args, kwargs = mock_run.call_args
-        assert args == ('/usr/bin/ssh', 'ssh', ['myhost'], 'secret')
+        mock_askpass.assert_called_once()
+        assert mock_askpass.call_args[0][0] == 'secret'
+        mock_execve.assert_called_once()
 
 
 class TestMainNewFormat:
     """Tests using the new fields-based hostdata format."""
 
-    @patch('ssh_concierge.wrap._run_with_askpass', return_value=0)
+    # See TestMain.test_with_password for why both execv and execve must be mocked.
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.os.execve')
+    @patch('ssh_concierge.wrap.create_askpass', return_value={'SSH_ASKPASS': '/tmp/ap', 'SSH_ASKPASS_REQUIRE': 'force'})
     @patch('ssh_concierge.wrap.OnePassword')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
-    def test_sensitive_password_resolved_at_ssh_time(self, mock_find, mock_op_cls, mock_run, tmp_path: Path):
+    def test_sensitive_password_resolved_at_ssh_time(self, mock_find, mock_op_cls, mock_askpass, mock_execve, mock_execv, tmp_path: Path):
         mock_op = mock_op_cls.return_value
         mock_op.read.return_value = 'secret123'
         hd_file = tmp_path / 'hostdata.json'
@@ -426,19 +409,21 @@ class TestMainNewFormat:
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
             with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
-                with pytest.raises(SystemExit) as exc_info:
-                    main()
-                assert exc_info.value.code == 0
+                main()
 
-        mock_run.assert_called_once()
-        args, kwargs = mock_run.call_args
-        assert args == ('/usr/bin/ssh', 'ssh', ['myhost'], 'secret123')
+        mock_askpass.assert_called_once()
+        assert mock_askpass.call_args[0][0] == 'secret123'
+        mock_execve.assert_called_once()
+        assert mock_execve.call_args[0][:2] == ('/usr/bin/ssh', ['ssh', 'myhost'])
 
+    # See TestMain.test_with_password for why both execv and execve must be mocked.
     @patch('ssh_concierge.wrap.copy_to_clipboard', return_value=True)
-    @patch('ssh_concierge.wrap._run_with_askpass', return_value=0)
+    @patch('ssh_concierge.wrap.os.execv')
+    @patch('ssh_concierge.wrap.os.execve')
+    @patch('ssh_concierge.wrap.create_askpass', return_value={'SSH_ASKPASS': '/tmp/ap', 'SSH_ASKPASS_REQUIRE': 'force'})
     @patch('ssh_concierge.wrap.OnePassword')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
-    def test_clipboard_with_sensitive_field(self, mock_find, mock_op_cls, mock_run, mock_clip, tmp_path: Path):
+    def test_clipboard_with_sensitive_field(self, mock_find, mock_op_cls, mock_askpass, mock_execve, mock_execv, mock_clip, tmp_path: Path):
         mock_op = mock_op_cls.return_value
         mock_op.read.return_value = 'secret'
         hd_file = tmp_path / 'hostdata.json'
@@ -453,14 +438,11 @@ class TestMainNewFormat:
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
             with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
-                with pytest.raises(SystemExit) as exc_info:
-                    main()
-                assert exc_info.value.code == 0
+                main()
 
         mock_clip.assert_called_once_with('sudo -i\nsecret\n')
-        mock_run.assert_called_once()
-        args, kwargs = mock_run.call_args
-        assert args == ('/usr/bin/ssh', 'ssh', ['myhost'], 'secret')
+        mock_askpass.assert_called_once()
+        assert mock_askpass.call_args[0][0] == 'secret'
 
     @patch('ssh_concierge.wrap.os.execv')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
