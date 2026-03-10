@@ -87,16 +87,22 @@ def resolve_password(
 
 
 @contextmanager
-def askpass_env(password: str) -> Iterator[dict[str, str]]:
+def askpass_env(password: str, *, askpass_dir: Path | None = None) -> Iterator[dict[str, str]]:
     """Context manager that creates a temporary SSH_ASKPASS script.
 
     Yields a dict of environment variables to merge into subprocess env:
       - SSH_ASKPASS: path to the temp script
       - SSH_ASKPASS_REQUIRE: 'force' (bypass TTY check)
 
-    The script is cleaned up on exit.
+    The script is cleaned up on exit.  Uses askpass_dir if provided,
+    otherwise falls back to a default under XDG_RUNTIME_DIR (avoiding
+    /tmp which may be mounted noexec on some systems).
     """
-    fd, script_path = tempfile.mkstemp(prefix='ssh-concierge-askpass-')
+    if askpass_dir is None:
+        xdg = os.environ.get('XDG_RUNTIME_DIR')
+        askpass_dir = Path(xdg) / 'ssh-concierge' if xdg else Path(tempfile.gettempdir())
+    askpass_dir.mkdir(parents=True, exist_ok=True)
+    fd, script_path = tempfile.mkstemp(prefix='askpass-', dir=askpass_dir)
     try:
         # Write the askpass script using a heredoc to avoid shell escaping issues.
         # The delimiter is unlikely to appear in any password.

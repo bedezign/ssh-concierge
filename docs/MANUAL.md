@@ -15,8 +15,8 @@ SSH never blocks. The entry point always exits 0, even if 1Password is locked or
 
 ### Prerequisites
 
+- **Platforms**: Linux and macOS. Windows is not supported (WSL may work but is untested).
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
 - [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) installed and signed in
 - 1Password SSH agent enabled (`~/.1password/agent.sock`)
 - `ssh-copy-id` (for `--deploy-key`, typically part of `openssh-client`)
@@ -346,6 +346,7 @@ If any step fails (`op read` fails, 1Password is locked), the wrapper falls back
 - Sensitive fields (passwords, `ops://` references) are **never** stored resolved in `hostdata.json`
 - Non-sensitive fields cache their resolved values for performance (avoids `op read` on every connection)
 - The askpass temp script is created with `0700` permissions and deleted after SSH exits
+- The askpass script is created in `askpass_dir` (defaults to `runtime_dir`). On systems where `/tmp` is mounted `noexec` (common on RHEL/CentOS), set `askpass_dir` to an executable filesystem in your config file. `--generate` warns if the askpass directory is on a noexec mount
 
 ### Setup
 
@@ -479,9 +480,11 @@ ssh-concierge --status                 # Show config path, age, host count
 ssh-concierge --debug ALIAS            # Show generated config block and field details
 ssh-concierge --deploy-key ALIAS       # Deploy SSH key to a host via ssh-copy-id
 ssh-concierge --deploy-key ALIAS --all # Deploy to all sibling hosts in the same section
+ssh-concierge --config                 # Show all config directives and effective values
+ssh-concierge --config DIRECTIVE       # Show a single config value (e.g. hosts_file, ttl)
 ```
 
-The shell entry point accepts all flags and delegates to Python.
+The shell entry point delegates all flags to Python.
 
 ### Debug
 
@@ -501,9 +504,48 @@ With `--all`, it also deploys to all **sibling hosts** — hosts from the same 1
 
 If the runtime config doesn't exist yet, `--deploy-key` generates it automatically.
 
+## Configuration
+
+ssh-concierge works without any configuration file — all settings have sensible defaults. For customization, create a TOML file at one of these locations (checked in order):
+
+1. `$XDG_CONFIG_HOME/ssh-concierge/config.toml`
+2. `~/.config/ssh-concierge/config.toml`
+3. `~/.ssh-concierge/config.toml`
+
+### Directives
+
+| Directive | Default | Description |
+|-----------|---------|-------------|
+| `runtime_dir` | `$XDG_RUNTIME_DIR/ssh-concierge` or `/tmp/ssh-concierge-$UID` | Where runtime files are generated |
+| `askpass_dir` | Same as `runtime_dir` | Where askpass temp scripts are created |
+| `ttl` | `3600` | Cache TTL in seconds |
+| `op_timeout` | `120` | 1Password CLI timeout in seconds |
+
+### Example
+
+```toml
+# ~/.config/ssh-concierge/config.toml
+runtime_dir = "/run/user/1000/ssh-concierge"
+ttl = 7200
+```
+
+### Querying config
+
+Use `--config` to see the effective configuration (defaults + config file overrides):
+
+```bash
+ssh-concierge --config              # All directives
+ssh-concierge --config hosts_file   # Single value
+ssh-concierge --config ttl          # "3600"
+```
+
+Available directives: `config_file`, `runtime_dir`, `askpass_dir`, `hosts_file`, `hostdata_file`, `keys_dir`, `ttl`, `op_timeout`.
+
+The shell entry point uses `--config` internally to get paths and TTL from Python, keeping a single source of truth.
+
 ## Runtime config
 
-Generated at `$XDG_RUNTIME_DIR/ssh-concierge/`:
+Generated at `$XDG_RUNTIME_DIR/ssh-concierge/` (or `runtime_dir` from config):
 
 ```
 $XDG_RUNTIME_DIR/ssh-concierge/
@@ -551,6 +593,11 @@ To migrate a host from static config to 1Password: add the SSH Config section to
 **1Password locked / not signed in**:
 - The cold path fails silently (exit 0). SSH falls through to static config.
 - Sign in with `op signin` or unlock 1Password, then run `ssh-concierge --generate`.
+
+**Password injection fails with "permission denied"**:
+- The askpass script may be on a `noexec` filesystem (common with `/tmp` on RHEL/CentOS).
+- Run `ssh-concierge --generate` — it warns if the askpass directory is noexec.
+- Fix: set `askpass_dir` in your config file to an executable path (e.g., `$XDG_RUNTIME_DIR/ssh-concierge`).
 
 **Stale config**:
 - Run `ssh-concierge --status` to check age.

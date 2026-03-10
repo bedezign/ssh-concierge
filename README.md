@@ -94,6 +94,7 @@ Any 1Password item — Server, Login, Secure Note — can manage a host. Tag it 
 - **`{{alias}}` placeholder** — `{{alias}}.example.com` expands per alias (simpler alternative to regex)
 - **Any SSH directive** — `ProxyJump`, `ForwardAgent`, `LocalForward`, etc. — just add the field
 - **Custom fields** — store arbitrary data for use in clipboard templates
+- **Configurable** — optional TOML config for custom paths, TTL, and timeouts
 - **Atomic writes + lockfile** — safe under concurrent SSH connections
 
 ## Documentation
@@ -103,6 +104,7 @@ Any 1Password item — Server, Login, Secure Note — can manage a host. Tag it 
 
 ## Requirements
 
+- **Platforms**: Linux and macOS. Windows is not supported (WSL may work but is untested).
 - Python 3.11+
 - [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) installed and signed in
 - 1Password SSH agent (`~/.1password/agent.sock`)

@@ -15,7 +15,7 @@ from ssh_concierge.models import HostConfig
 
 logger = logging.getLogger(__name__)
 
-# Fields from the "SSH Config" section that map to HostConfig attributes directly
+# Fields from the "SSH Config" section that are handled explicitly (including alternate names)
 _KNOWN_FIELDS = {'aliases', 'alias', 'hostname', 'host', 'port', 'user', 'username', 'password', 'clipboard', 'key', 'on'}
 
 # Valid SSH client config keywords (from man ssh_config, OpenSSH 8.x-9.x).
@@ -132,23 +132,24 @@ class OpError(Exception):
 class OnePassword:
     """Gateway to 1Password CLI with built-in caching."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, op_timeout: int = 120) -> None:
         self._read_cache: dict[str, str] = {}  # lowercased op:// ref → value
+        self._op_timeout = op_timeout
 
-    @staticmethod
-    def _run(args: list[str], timeout: int = 120) -> str:
+    def _run(self, args: list[str], timeout: int | None = None) -> str:
         """Run an op CLI command and return stdout."""
+        effective_timeout = timeout if timeout is not None else self._op_timeout
         try:
             result = subprocess.run(
                 ['op', *args],
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=effective_timeout,
             )
         except FileNotFoundError as exc:
             raise OpError('op CLI not found — is 1Password CLI installed?') from exc
         except subprocess.TimeoutExpired as exc:
-            raise OpError(f'op command timed out after {timeout}s') from exc
+            raise OpError(f'op command timed out after {effective_timeout}s') from exc
 
         if result.returncode != 0:
             raise OpError(f'op failed (exit {result.returncode}): {result.stderr.strip()}')

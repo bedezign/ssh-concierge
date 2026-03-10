@@ -7,22 +7,28 @@
 # Hot path: stat the config file, check age < TTL → exit 0 (sub-millisecond)
 # Cold path: invoke Python to regenerate from 1Password
 
-if [ -n "$XDG_RUNTIME_DIR" ]; then
-    RUNTIME_DIR="$XDG_RUNTIME_DIR/ssh-concierge"
-else
-    RUNTIME_DIR="/tmp/ssh-concierge-$(id -u)"
-fi
-readonly RUNTIME_DIR
-readonly CONFIG="$RUNTIME_DIR/hosts.conf"
-readonly TTL=3600  # 1 hour
-
-# --generate / --flush / --list / --status: delegate to Python immediately
+# Any flag (--something / -x): delegate to Python (argparse handles errors)
+# Only bare hostnames (from Match exec "ssh-concierge %h") fall through.
 case "$1" in
-    --generate|--flush|--list|--status|--debug|--deploy-key|--help|-h)
+    -*)
         ssh-concierge-py "$@"
         exit $?
         ;;
 esac
+
+# Read config values from Python (single source of truth)
+CONFIG=$(ssh-concierge-py --config hosts_file 2>/dev/null)
+TTL=$(ssh-concierge-py --config ttl 2>/dev/null)
+
+# Fallback if Python fails (e.g. broken install)
+if [ -z "$CONFIG" ]; then
+    if [ -n "$XDG_RUNTIME_DIR" ]; then
+        CONFIG="$XDG_RUNTIME_DIR/ssh-concierge/hosts.conf"
+    else
+        CONFIG="/tmp/ssh-concierge-$(id -u)/hosts.conf"
+    fi
+fi
+TTL="${TTL:-3600}"
 
 # Hot path: config exists and is fresh
 if [ -f "$CONFIG" ]; then

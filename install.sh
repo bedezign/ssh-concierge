@@ -11,12 +11,12 @@ MIN_PYTHON_MINOR=11  # Minimum Python 3.x version
 
 # --- Output helpers ---
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-BOLD='\033[1m'
-NC='\033[0m'
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+BLUE=$'\033[0;34m'
+BOLD=$'\033[1m'
+NC=$'\033[0m'
 
 info()    { printf "${BLUE}→${NC} %s\n" "$*"; }
 ok()      { printf "${GREEN}✓${NC} %s\n" "$*"; }
@@ -362,15 +362,15 @@ else
     info "Add the following to $SSH_CONFIG (before any other Host/Match blocks):"
     echo ""
     cat <<EOF
-    ${BOLD}Match host * exec "ssh-concierge %h"
-        Include $runtime_example/hosts.conf${NC}
+    Match host * exec "ssh-concierge %h"
+        Include $runtime_example/hosts.conf
 EOF
     echo ""
     info "If you use the 1Password SSH agent, also add:"
     echo ""
     cat <<EOF
-    ${BOLD}Host *
-        IdentityAgent ~/.1password/agent.sock${NC}
+    Host *
+        IdentityAgent ~/.1password/agent.sock
 EOF
     echo ""
 fi

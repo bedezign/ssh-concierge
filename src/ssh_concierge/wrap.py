@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from ssh_concierge.argparse_ssh import extract_scp_host, extract_ssh_host
-from ssh_concierge.config import default_runtime_dir
 from ssh_concierge.field import TEMPLATE_CLOSE, TEMPLATE_OPEN, resolve_chain
 from ssh_concierge.onepassword import OnePassword
 from ssh_concierge.password import askpass_env
+from ssh_concierge.settings import load_settings
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,11 @@ def copy_to_clipboard(value: str) -> bool:
     try:
         subprocess.run(cmd, input=value.encode(), check=True, timeout=5)
         return True
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+    except FileNotFoundError:
+        tool_name = cmd[0]
+        print(f'ssh-concierge: clipboard not available ({tool_name} not installed)', file=sys.stderr)
+        return False
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         print(f'ssh-concierge: clipboard copy failed: {exc}', file=sys.stderr)
         return False
 
@@ -130,8 +134,8 @@ def main() -> None:
         host = extract_ssh_host(args)
 
     if host:
-        runtime_dir = default_runtime_dir()
-        entry = lookup_hostdata(host, runtime_dir / 'hostdata.json')
+        settings = load_settings()
+        entry = lookup_hostdata(host, settings.hostdata_file)
         if entry:
             resolved = _resolve_fields(entry)
 
@@ -142,7 +146,10 @@ def main() -> None:
 
             # Password: askpass injection
             if resolved and resolved.get('password'):
-                rc = _run_with_askpass(real_binary, tool, args, resolved['password'])
+                rc = _run_with_askpass(
+                    real_binary, tool, args, resolved['password'],
+                    askpass_dir=settings.askpass_dir,
+                )
                 sys.exit(rc)
 
     # Fallback: exec real binary with original args
@@ -154,6 +161,8 @@ def _run_with_askpass(
     tool: str,
     args: list[str],
     password: str,
+    *,
+    askpass_dir: Path | None = None,
 ) -> int:
     """Run the real binary with SSH_ASKPASS for password injection.
 
@@ -161,7 +170,7 @@ def _run_with_askpass(
     SSH_ASKPASS_REQUIRE=force makes SSH use ASKPASS even with a TTY present,
     so we don't need setsid (which would break PTY allocation).
     """
-    with askpass_env(password) as env_vars:
+    with askpass_env(password, askpass_dir=askpass_dir) as env_vars:
         env = {**os.environ, **env_vars}
         result = subprocess.run(
             [real_binary, *args],

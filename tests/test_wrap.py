@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ssh_concierge.settings import Settings
 from ssh_concierge.wrap import (
     _resolve_fields,
     _run_with_askpass,
@@ -19,6 +20,16 @@ from ssh_concierge.wrap import (
     main,
     resolve_clipboard,
 )
+
+
+def _mock_settings(tmp_path: Path) -> Settings:
+    return Settings(
+        runtime_dir=tmp_path,
+        askpass_dir=tmp_path,
+        ttl=3600,
+        op_timeout=120,
+        config_file=None,
+    )
 
 
 class TestFindRealBinary:
@@ -244,7 +255,7 @@ class TestCopyToClipboard:
         with patch.dict(os.environ, {'WAYLAND_DISPLAY': 'wayland-0'}):
             assert copy_to_clipboard('test') is False
         err = capsys.readouterr().err
-        assert 'clipboard copy failed' in err.lower()
+        assert 'not installed' in err.lower()
 
 
 class TestRunWithAskpass:
@@ -276,7 +287,7 @@ class TestMain:
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
     def test_no_hostdata_falls_through(self, mock_find, mock_execv, tmp_path: Path):
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
                 main()
         mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh', 'myhost'])
 
@@ -296,12 +307,14 @@ class TestMain:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 assert exc_info.value.code == 0
 
-        mock_run.assert_called_once_with('/usr/bin/ssh', 'ssh', ['myhost'], 'secret123')
+        mock_run.assert_called_once()
+        args, kwargs = mock_run.call_args
+        assert args == ('/usr/bin/ssh', 'ssh', ['myhost'], 'secret123')
 
     def test_no_real_binary_exits(self):
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
@@ -326,7 +339,7 @@ class TestMain:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
                 main()
         mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh', 'myhost'])
 
@@ -334,7 +347,7 @@ class TestMain:
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/scp')
     def test_scp_tool_detection(self, mock_find, mock_execv, tmp_path: Path):
         with patch('sys.argv', ['/home/user/.local/bin/scp', 'myhost:/file', '.']):
-            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
                 main()
         mock_execv.assert_called_once_with('/usr/bin/scp', ['scp', 'myhost:/file', '.'])
 
@@ -342,7 +355,7 @@ class TestMain:
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
     def test_no_args_passes_through(self, mock_find, mock_execv, tmp_path: Path):
         with patch('sys.argv', ['/home/user/.local/bin/ssh']):
-            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
                 main()
         mock_execv.assert_called_once_with('/usr/bin/ssh', ['ssh'])
 
@@ -357,7 +370,7 @@ class TestMain:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
                 main()
 
         mock_clip.assert_called_once_with('hello\nworld')
@@ -382,13 +395,15 @@ class TestMain:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 assert exc_info.value.code == 0
 
         mock_clip.assert_called_once_with('sudo -i\nsecret\n')
-        mock_run.assert_called_once_with('/usr/bin/ssh', 'ssh', ['myhost'], 'secret')
+        mock_run.assert_called_once()
+        args, kwargs = mock_run.call_args
+        assert args == ('/usr/bin/ssh', 'ssh', ['myhost'], 'secret')
 
 
 class TestMainNewFormat:
@@ -410,12 +425,14 @@ class TestMainNewFormat:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 assert exc_info.value.code == 0
 
-        mock_run.assert_called_once_with('/usr/bin/ssh', 'ssh', ['myhost'], 'secret123')
+        mock_run.assert_called_once()
+        args, kwargs = mock_run.call_args
+        assert args == ('/usr/bin/ssh', 'ssh', ['myhost'], 'secret123')
 
     @patch('ssh_concierge.wrap.copy_to_clipboard', return_value=True)
     @patch('ssh_concierge.wrap._run_with_askpass', return_value=0)
@@ -435,13 +452,15 @@ class TestMainNewFormat:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 assert exc_info.value.code == 0
 
         mock_clip.assert_called_once_with('sudo -i\nsecret\n')
-        mock_run.assert_called_once_with('/usr/bin/ssh', 'ssh', ['myhost'], 'secret')
+        mock_run.assert_called_once()
+        args, kwargs = mock_run.call_args
+        assert args == ('/usr/bin/ssh', 'ssh', ['myhost'], 'secret')
 
     @patch('ssh_concierge.wrap.os.execv')
     @patch('ssh_concierge.wrap.find_real_binary', return_value='/usr/bin/ssh')
@@ -457,7 +476,7 @@ class TestMainNewFormat:
         }))
 
         with patch('sys.argv', ['/home/user/.local/bin/ssh', 'myhost']):
-            with patch('ssh_concierge.wrap.default_runtime_dir', return_value=tmp_path):
+            with patch('ssh_concierge.wrap.load_settings', return_value=_mock_settings(tmp_path)):
                 main()
 
         # No password → falls through to execv
