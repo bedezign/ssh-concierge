@@ -167,60 +167,54 @@ class TestResolvePasswordFallbackChain:
 
 
 class TestCreateAskpass:
-    def test_returns_correct_env_vars(self):
-        env = create_askpass('mypassword')
-        try:
-            assert 'SSH_ASKPASS' in env
-            assert env['SSH_ASKPASS_REQUIRE'] == 'force'
-            script = Path(env['SSH_ASKPASS'])
-            assert script.exists()
-            assert script.stat().st_mode & stat.S_IRWXU == stat.S_IRWXU
-        finally:
-            Path(env['SSH_ASKPASS']).unlink(missing_ok=True)
+    def test_returns_correct_env_vars(self, tmp_path):
+        env = create_askpass('mypassword', askpass_dir=tmp_path)
+        assert 'SSH_ASKPASS' in env
+        assert env['SSH_ASKPASS_REQUIRE'] == 'force'
+        assert env['__SSH_CONCIERGE_PW'] == 'mypassword'
+        script = Path(env['SSH_ASKPASS'])
+        assert script.exists()
+        assert script.stat().st_mode & stat.S_IRWXU == stat.S_IRWXU
 
-    def test_script_outputs_password(self):
-        env = create_askpass('testpw123')
-        try:
-            content = Path(env['SSH_ASKPASS']).read_text()
-            assert 'testpw123' in content
-        finally:
-            Path(env['SSH_ASKPASS']).unlink(missing_ok=True)
+    def test_script_is_generic(self, tmp_path):
+        """Script contains no password — only reads from env var."""
+        env = create_askpass('s3cret', askpass_dir=tmp_path)
+        content = Path(env['SSH_ASKPASS']).read_text()
+        assert 's3cret' not in content
+        assert '__SSH_CONCIERGE_PW' in content
 
-    def test_script_self_deletes(self):
-        """Script deletes itself after a delay when executed."""
-        import subprocess
-        import time
+    def test_script_reused_across_calls(self, tmp_path):
+        """Same script file is reused for different passwords."""
+        env1 = create_askpass('pw1', askpass_dir=tmp_path)
+        env2 = create_askpass('pw2', askpass_dir=tmp_path)
+        assert env1['SSH_ASKPASS'] == env2['SSH_ASKPASS']
+        assert env1['__SSH_CONCIERGE_PW'] == 'pw1'
+        assert env2['__SSH_CONCIERGE_PW'] == 'pw2'
 
-        env = create_askpass('pw')
-        script_path = env['SSH_ASKPASS']
-        assert Path(script_path).exists()
-        subprocess.run([script_path], capture_output=True)
-        # Script still exists immediately (deletion is delayed in background)
-        assert Path(script_path).exists()
-        time.sleep(6)
-        assert not Path(script_path).exists()
-
-    def test_password_with_special_chars(self):
-        """Heredoc approach handles all special chars without escaping."""
-        pw = 'p@ss"w$rd`test\\'
-        env = create_askpass(pw)
-        try:
-            content = Path(env['SSH_ASKPASS']).read_text()
-            assert pw in content
-        finally:
-            Path(env['SSH_ASKPASS']).unlink(missing_ok=True)
-
-    def test_password_with_dollar_and_backtick(self):
-        """Verify shell metacharacters are preserved literally."""
+    def test_script_outputs_password(self, tmp_path):
+        """Running the script with __SSH_CONCIERGE_PW set outputs the password."""
         import subprocess
 
-        pw = '$HOME `whoami` "quoted" \\backslash'
-        env = create_askpass(pw)
+        pw = 'testpw123'
+        env = create_askpass(pw, askpass_dir=tmp_path)
         result = subprocess.run(
             [env['SSH_ASKPASS']],
             capture_output=True,
             text=True,
+            env={'__SSH_CONCIERGE_PW': pw},
         )
         assert result.stdout.rstrip('\n') == pw
-        # Script still exists (delayed self-deletion), clean up manually
-        Path(env['SSH_ASKPASS']).unlink(missing_ok=True)
+
+    def test_password_with_dollar_and_backtick(self, tmp_path):
+        """Verify shell metacharacters are preserved literally via env var."""
+        import subprocess
+
+        pw = '$HOME `whoami` "quoted" \\backslash'
+        env = create_askpass(pw, askpass_dir=tmp_path)
+        result = subprocess.run(
+            [env['SSH_ASKPASS']],
+            capture_output=True,
+            text=True,
+            env={'__SSH_CONCIERGE_PW': pw},
+        )
+        assert result.stdout.rstrip('\n') == pw

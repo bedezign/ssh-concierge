@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -85,37 +84,41 @@ def resolve_password(
     return resolve_chain(raw_password, op, vault_id, item_id)
 
 
+_ASKPASS_SCRIPT = '#!/bin/sh\nprintf \'%s\\n\' "$__SSH_CONCIERGE_PW"\n'
+
+
 def create_askpass(password: str, *, askpass_dir: Path | None = None) -> dict[str, str]:
-    """Create a self-deleting SSH_ASKPASS script.
+    """Create an SSH_ASKPASS script that outputs a password from the environment.
+
+    The script is generic — it reads ``__SSH_CONCIERGE_PW`` from the process
+    environment, so the password never touches disk.  The script is written
+    once and reused across connections.
 
     Returns a dict of environment variables to merge into the exec env:
       - SSH_ASKPASS: path to the script
       - SSH_ASKPASS_REQUIRE: 'force' (bypass TTY check)
-
-    The script deletes itself after outputting the password, so no cleanup
-    is needed by the caller.  Uses askpass_dir if provided, otherwise
-    falls back to XDG_RUNTIME_DIR (avoiding /tmp which may be noexec).
+      - __SSH_CONCIERGE_PW: the password value
     """
     if askpass_dir is None:
         xdg = os.environ.get('XDG_RUNTIME_DIR')
-        askpass_dir = Path(xdg) / 'ssh-concierge' if xdg else Path(tempfile.gettempdir())
+        askpass_dir = Path(xdg) / 'ssh-concierge' if xdg else Path('/tmp')
     askpass_dir.mkdir(parents=True, exist_ok=True)
-    fd, script_path = tempfile.mkstemp(prefix='askpass-', dir=askpass_dir)
-    # Write the askpass script using a heredoc to avoid shell escaping issues.
-    # Delayed self-deletion: SSH may call askpass multiple times (host key
-    # verification, then password), so we can't delete on first invocation.
-    # A background sleep+rm ensures cleanup after SSH has finished prompting.
-    os.write(fd, (
-        "#!/bin/sh\n"
-        "cat <<'__SSH_CONCIERGE_PW__'\n"
-        f"{password}\n"
-        "__SSH_CONCIERGE_PW__\n"
-        '(sleep 5 && rm -f "$0") >/dev/null 2>&1 &\n'
-    ).encode())
-    os.close(fd)
-    os.chmod(script_path, stat.S_IRWXU)  # 0700
+    script_path = askpass_dir / 'askpass'
+
+    # Only write when missing or contents differ.
+    needs_write = True
+    if script_path.exists():
+        try:
+            needs_write = script_path.read_text() != _ASKPASS_SCRIPT
+        except OSError:
+            pass
+
+    if needs_write:
+        script_path.write_text(_ASKPASS_SCRIPT)
+        script_path.chmod(stat.S_IRWXU)  # 0700
 
     return {
-        'SSH_ASKPASS': script_path,
+        'SSH_ASKPASS': str(script_path),
         'SSH_ASKPASS_REQUIRE': 'force',
+        '__SSH_CONCIERGE_PW': password,
     }
