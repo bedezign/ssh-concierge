@@ -102,13 +102,15 @@ def create_askpass(password: str, *, askpass_dir: Path | None = None) -> dict[st
     askpass_dir.mkdir(parents=True, exist_ok=True)
     fd, script_path = tempfile.mkstemp(prefix='askpass-', dir=askpass_dir)
     # Write the askpass script using a heredoc to avoid shell escaping issues.
-    # The script deletes itself after outputting the password.
+    # Delayed self-deletion: SSH may call askpass multiple times (host key
+    # verification, then password), so we can't delete on first invocation.
+    # A background sleep+rm ensures cleanup after SSH has finished prompting.
     os.write(fd, (
         "#!/bin/sh\n"
         "cat <<'__SSH_CONCIERGE_PW__'\n"
         f"{password}\n"
         "__SSH_CONCIERGE_PW__\n"
-        'rm -f "$0"\n'
+        '(sleep 5 && rm -f "$0") >/dev/null 2>&1 &\n'
     ).encode())
     os.close(fd)
     os.chmod(script_path, stat.S_IRWXU)  # 0700

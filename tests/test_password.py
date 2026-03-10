@@ -187,13 +187,17 @@ class TestCreateAskpass:
             Path(env['SSH_ASKPASS']).unlink(missing_ok=True)
 
     def test_script_self_deletes(self):
-        """Script deletes itself when executed."""
+        """Script deletes itself after a delay when executed."""
         import subprocess
+        import time
 
         env = create_askpass('pw')
         script_path = env['SSH_ASKPASS']
         assert Path(script_path).exists()
         subprocess.run([script_path], capture_output=True)
+        # Script still exists immediately (deletion is delayed in background)
+        assert Path(script_path).exists()
+        time.sleep(6)
         assert not Path(script_path).exists()
 
     def test_password_with_special_chars(self):
@@ -218,5 +222,5 @@ class TestCreateAskpass:
             text=True,
         )
         assert result.stdout.rstrip('\n') == pw
-        # Script should have self-deleted
-        assert not Path(env['SSH_ASKPASS']).exists()
+        # Script still exists (delayed self-deletion), clean up manually
+        Path(env['SSH_ASKPASS']).unlink(missing_ok=True)
