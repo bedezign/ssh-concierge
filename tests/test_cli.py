@@ -12,7 +12,8 @@ import pytest
 from ssh_concierge.cli import (
     cmd_generate, cmd_flush, cmd_status, cmd_list, cmd_debug, main,
     _parse_op_item_ref, _build_key_registry, _resolve_key_ref,
-    _load_cached_hostdata, _warn_noexec_askpass, resolve_host_fields,
+    _load_cached_hostdata, _warn_noexec_askpass, _write_env_sh,
+    resolve_host_fields,
 )
 from ssh_concierge.deploy import cmd_deploy_key
 from ssh_concierge.field import FieldValue
@@ -832,3 +833,54 @@ class TestWarnNoexecAskpass:
             _warn_noexec_askpass(Path('/nonexistent'))
         err = capsys.readouterr().err
         assert err == ''
+
+
+class TestWriteEnvSh:
+    def test_writes_config_and_ttl(self, settings, runtime_dir):
+        _write_env_sh(settings)
+        env_path = runtime_dir / 'env.sh'
+        assert env_path.exists()
+        content = env_path.read_text()
+        assert f"CONFIG='{settings.hosts_file}'" in content
+        assert f"TTL='{settings.ttl}'" in content
+
+    def test_values_are_shell_quoted(self, tmp_path):
+        """Values are single-quoted to handle paths with spaces."""
+        weird_dir = tmp_path / 'path with spaces'
+        settings = Settings(
+            runtime_dir=weird_dir,
+            askpass_dir=weird_dir,
+            ttl=3600,
+            op_timeout=120,
+            config_file=None,
+        )
+        _write_env_sh(settings)
+        content = (weird_dir / 'env.sh').read_text()
+        assert "CONFIG='" in content
+        assert "TTL='" in content
+
+    def test_creates_parent_dirs(self, tmp_path):
+        deep_dir = tmp_path / 'a' / 'b' / 'c'
+        settings = Settings(
+            runtime_dir=deep_dir,
+            askpass_dir=deep_dir,
+            ttl=3600,
+            op_timeout=120,
+            config_file=None,
+        )
+        _write_env_sh(settings)
+        assert (deep_dir / 'env.sh').exists()
+
+    def test_sourceable_by_shell(self, settings, runtime_dir):
+        """env.sh is valid shell that sets CONFIG and TTL."""
+        import subprocess
+
+        _write_env_sh(settings)
+        result = subprocess.run(
+            ['sh', '-c', f'. "{runtime_dir}/env.sh" && echo "CONFIG=$CONFIG" && echo "TTL=$TTL"'],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert f'CONFIG={settings.hosts_file}' in result.stdout
+        assert f'TTL={settings.ttl}' in result.stdout

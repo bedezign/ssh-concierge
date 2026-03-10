@@ -4,7 +4,7 @@
 # Called by: Match host * exec "ssh-concierge %h"
 # Always exits 0 — never blocks SSH connections.
 #
-# Hot path: stat the config file, check age < TTL → exit 0 (sub-millisecond)
+# Hot path: source env.sh + stat the config file, check age < TTL → exit 0 (sub-millisecond)
 # Cold path: invoke Python to regenerate from 1Password
 
 # Any flag (--something / -x): delegate to Python (argparse handles errors)
@@ -16,11 +16,18 @@ case "$1" in
         ;;
 esac
 
-# Read config values from Python (single source of truth)
-CONFIG=$(ssh-concierge-py --config hosts_file 2>/dev/null)
-TTL=$(ssh-concierge-py --config ttl 2>/dev/null)
+# Read cached settings from env.sh (written by --generate, avoids Python on hot path)
+if [ -n "$XDG_RUNTIME_DIR" ]; then
+    _ENV="$XDG_RUNTIME_DIR/ssh-concierge/env.sh"
+else
+    _ENV="/tmp/ssh-concierge-$(id -u)/env.sh"
+fi
 
-# Fallback if Python fails (e.g. broken install)
+if [ -f "$_ENV" ]; then
+    . "$_ENV"
+fi
+
+# Fallback defaults if env.sh doesn't exist yet (first run)
 if [ -z "$CONFIG" ]; then
     if [ -n "$XDG_RUNTIME_DIR" ]; then
         CONFIG="$XDG_RUNTIME_DIR/ssh-concierge/hosts.conf"

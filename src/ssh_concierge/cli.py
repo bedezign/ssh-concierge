@@ -27,6 +27,20 @@ from ssh_concierge.settings import Settings, load_settings
 from ssh_concierge.wrap import lookup_hostdata
 
 
+def _write_env_sh(settings: Settings) -> None:
+    """Write env.sh in the runtime dir for the shell entry point to source.
+
+    Keeps the hot path Python-free: the shell script reads these values
+    instead of invoking ``ssh-concierge-py --config`` on every connection.
+    """
+    env_path = settings.runtime_dir / 'env.sh'
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(
+        f"CONFIG='{settings.hosts_file}'\n"
+        f"TTL='{settings.ttl}'\n"
+    )
+
+
 def _warn_noexec_askpass(askpass_dir: Path) -> None:
     """Warn if the askpass directory is on a noexec-mounted filesystem."""
     try:
@@ -348,6 +362,7 @@ def cmd_generate(
                             hostdata[alias] = entry
 
         generate_runtime_config(hosts, runtime_dir, hostdata or None)
+        _write_env_sh(settings)
 
         password_count = sum(
             1 for e in hostdata.values()
