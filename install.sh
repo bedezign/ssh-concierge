@@ -189,6 +189,30 @@ else
     warn "Install from: https://developer.1password.com/docs/cli/get-started/"
 fi
 
+# --- Check clipboard tool (optional, for clipboard feature) ---
+
+check_clipboard() {
+    if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+        if command -v wl-copy &>/dev/null; then
+            ok "Clipboard: wl-copy (Wayland)"
+        else
+            warn "Wayland detected but wl-copy not found — clipboard feature won't work."
+            warn "Install wl-clipboard: https://github.com/bugaevc/wl-clipboard"
+        fi
+    elif [[ -n "${DISPLAY:-}" ]]; then
+        if command -v xclip &>/dev/null; then
+            ok "Clipboard: xclip (X11)"
+        else
+            warn "X11 detected but xclip not found — clipboard feature won't work."
+            warn "Install xclip from your package manager."
+        fi
+    else
+        warn "No display server detected — clipboard feature won't work in this session."
+    fi
+}
+
+check_clipboard
+
 # --- Set up virtual environment ---
 
 heading "Virtual environment"
