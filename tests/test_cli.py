@@ -12,7 +12,8 @@ import pytest
 from ssh_concierge.cli import (
     cmd_generate, cmd_flush, cmd_status, cmd_list, cmd_debug, main,
     _parse_op_item_ref, _build_key_registry, _resolve_key_ref,
-    _load_cached_hostdata, _warn_noexec_askpass, _write_env_sh,
+    _load_cached_hostdata, _warn_noexec_askpass, _warn_missing_agent_keys,
+    _get_agent_fingerprints, _agent_key_status, _write_env_sh,
     resolve_host_fields,
 )
 from ssh_concierge.deploy import cmd_deploy_key
@@ -884,3 +885,171 @@ class TestWriteEnvSh:
         assert result.returncode == 0
         assert f'CONFIG={settings.hosts_file}' in result.stdout
         assert f'TTL={settings.ttl}' in result.stdout
+
+
+class TestGetAgentFingerprints:
+    """Tests for _get_agent_fingerprints."""
+
+    def test_no_socket_returns_none(self):
+        """Returns None when SSH_AUTH_SOCK is not set."""
+        with patch.dict(os.environ, {}, clear=True):
+            assert _get_agent_fingerprints() is None
+
+    def test_empty_socket_returns_none(self):
+        """Returns None when SSH_AUTH_SOCK is empty."""
+        with patch.dict(os.environ, {'SSH_AUTH_SOCK': ''}):
+            assert _get_agent_fingerprints() is None
+
+    def test_parses_fingerprints(self):
+        """Extracts fingerprints from ssh-add -l output."""
+        output = (
+            '256 SHA256:abc123def456 user@host (ED25519)\n'
+            '4096 SHA256:xyz789ghi012 another@host (RSA)\n'
+        )
+        mock_result = MagicMock(returncode=0, stdout=output)
+        with patch.dict(os.environ, {'SSH_AUTH_SOCK': '/tmp/agent.sock'}):
+            with patch('ssh_concierge.cli.subprocess.run', return_value=mock_result):
+                result = _get_agent_fingerprints()
+        assert result == {'SHA256:abc123def456', 'SHA256:xyz789ghi012'}
+
+    def test_ssh_add_failure_returns_none(self):
+        """Returns None when ssh-add exits non-zero."""
+        mock_result = MagicMock(returncode=1, stdout='The agent has no identities.\n')
+        with patch.dict(os.environ, {'SSH_AUTH_SOCK': '/tmp/agent.sock'}):
+            with patch('ssh_concierge.cli.subprocess.run', return_value=mock_result):
+                assert _get_agent_fingerprints() is None
+
+    def test_ssh_add_not_found_returns_none(self):
+        """Returns None when ssh-add binary is not found."""
+        with patch.dict(os.environ, {'SSH_AUTH_SOCK': '/tmp/agent.sock'}):
+            with patch('ssh_concierge.cli.subprocess.run', side_effect=FileNotFoundError):
+                assert _get_agent_fingerprints() is None
+
+    def test_timeout_returns_none(self):
+        """Returns None when ssh-add times out."""
+        import subprocess as sp
+
+        with patch.dict(os.environ, {'SSH_AUTH_SOCK': '/tmp/agent.sock'}):
+            with patch('ssh_concierge.cli.subprocess.run', side_effect=sp.TimeoutExpired('ssh-add', 5)):
+                assert _get_agent_fingerprints() is None
+
+
+class TestWarnMissingAgentKeys:
+    """Tests for _warn_missing_agent_keys."""
+
+    def test_no_agent_skips_silently(self, capsys):
+        """No warning when agent is unavailable."""
+        hosts = [HostConfig(aliases=['server1'], fingerprint='SHA256:abc')]
+        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value=None):
+            _warn_missing_agent_keys(hosts, {})
+        assert capsys.readouterr().err == ''
+
+    def test_all_keys_present_no_warning(self, capsys):
+        """No warning when all keys are in the agent."""
+        hosts = [HostConfig(aliases=['server1'], fingerprint='SHA256:abc')]
+        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value={'SHA256:abc'}):
+            _warn_missing_agent_keys(hosts, {})
+        assert capsys.readouterr().err == ''
+
+    def test_missing_key_warns(self, capsys):
+        """Warning printed for keys not in the agent."""
+        hosts = [HostConfig(aliases=['server1'], fingerprint='SHA256:missing')]
+        hostdata = {'server1': {'key': 'op://Work/MyKey'}}
+        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value={'SHA256:other'}):
+            _warn_missing_agent_keys(hosts, hostdata)
+        err = capsys.readouterr().err
+        assert 'SHA256:missing' in err
+        assert 'server1' in err
+        assert 'op://Work/MyKey' in err
+
+    def test_no_fingerprint_hosts_skipped(self, capsys):
+        """Hosts without fingerprints are not checked."""
+        hosts = [HostConfig(aliases=['server1'], fingerprint=None)]
+        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value=set()):
+            _warn_missing_agent_keys(hosts, {})
+        assert capsys.readouterr().err == ''
+
+    def test_wildcard_aliases_excluded(self, capsys):
+        """Wildcard aliases are excluded from the warning."""
+        hosts = [HostConfig(aliases=['*.example.com', 'server1'], fingerprint='SHA256:miss')]
+        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value=set()):
+            _warn_missing_agent_keys(hosts, {})
+        err = capsys.readouterr().err
+        assert 'server1' in err
+        assert '*.example.com' not in err
+
+
+class TestDebugAgentCheck:
+    """Tests for agent key check in cmd_debug."""
+
+    def _setup_config(self, runtime_dir, alias, fingerprint):
+        """Set up a minimal hosts.conf and hostdata.json for testing."""
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        fp_safe = fingerprint.replace('/', '_')
+        hosts_conf = (
+            f'Host {alias}\n'
+            f'    HostName 10.0.0.1\n'
+            f'    IdentityFile {runtime_dir}/keys/{fp_safe}.pub\n'
+        )
+        (runtime_dir / 'hosts.conf').write_text(hosts_conf)
+        hostdata = {
+            alias: {
+                'key': 'op://Work/TestKey',
+                'fields': {},
+            }
+        }
+        (runtime_dir / 'hostdata.json').write_text(json.dumps(hostdata))
+
+    def test_key_available_in_agent(self, capsys, runtime_dir, settings):
+        """Shows checkmark when key is in the agent."""
+        fp = 'SHA256:abc123'
+        self._setup_config(runtime_dir, 'server1', fp)
+        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value={fp}):
+            cmd_debug('server1', settings)
+        out = capsys.readouterr().out
+        assert '✓ available in SSH agent' in out
+
+    def test_key_not_in_agent(self, capsys, runtime_dir, settings):
+        """Shows warning when key is not in the agent."""
+        fp = 'SHA256:abc123'
+        self._setup_config(runtime_dir, 'server1', fp)
+        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value={'SHA256:other'}):
+            cmd_debug('server1', settings)
+        out = capsys.readouterr().out
+        assert '⚠ NOT in SSH agent' in out
+
+    def test_no_agent_no_status(self, capsys, runtime_dir, settings):
+        """No agent status shown when agent is unavailable."""
+        fp = 'SHA256:abc123'
+        self._setup_config(runtime_dir, 'server1', fp)
+        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value=None):
+            cmd_debug('server1', settings)
+        out = capsys.readouterr().out
+        assert '✓' not in out
+        assert '⚠ NOT in SSH agent' not in out
+        assert '# Key: op://Work/TestKey' in out
+
+
+class TestAgentKeyStatus:
+    """Tests for _agent_key_status edge cases."""
+
+    def test_non_pub_identity_returns_empty(self):
+        """IdentityFile without .pub extension returns empty status."""
+        assert _agent_key_status('    IdentityFile /path/to/key') == ''
+
+    def test_malformed_line_returns_empty(self):
+        """IdentityFile line with no path returns empty status."""
+        assert _agent_key_status('    IdentityFile') == ''
+
+    def test_fingerprint_with_slashes(self):
+        """Fingerprints with / (stored as _ in filenames) round-trip correctly."""
+        fp = 'SHA256:abc/def/ghi'
+        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value={fp}):
+            result = _agent_key_status('    IdentityFile /run/keys/SHA256:abc_def_ghi.pub')
+        assert '✓' in result
+
+    def test_agent_unavailable_returns_empty(self):
+        """Returns empty string when the agent cannot be queried."""
+        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value=None):
+            result = _agent_key_status('    IdentityFile /run/keys/SHA256:abc.pub')
+        assert result == ''

@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -58,6 +59,83 @@ def _warn_noexec_askpass(askpass_dir: Path) -> None:
             )
     except OSError:
         pass  # Can't check — don't block generation
+
+
+def _get_agent_fingerprints() -> set[str] | None:
+    """Query the SSH agent for available key fingerprints.
+
+    Returns a set of fingerprint strings (e.g. 'SHA256:abc...'), or None
+    if the agent is unavailable or cannot be queried.
+    """
+    if not os.environ.get('SSH_AUTH_SOCK'):
+        return None
+
+    try:
+        result = subprocess.run(
+            ['ssh-add', '-l'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    # Format: "bits fingerprint comment (type)"
+    fingerprints = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            fingerprints.add(parts[1])
+    return fingerprints
+
+
+def _warn_missing_agent_keys(
+    hosts: list[HostConfig],
+    hostdata: dict[str, dict],
+) -> None:
+    """Warn about exported keys that are not available in the SSH agent."""
+    agent_fps = _get_agent_fingerprints()
+    if agent_fps is None:
+        return  # Can't check — skip silently
+
+    # Collect fingerprint → alias list for hosts with IdentityFile
+    missing: dict[str, list[str]] = {}
+    for host in hosts:
+        if not host.fingerprint:
+            continue
+        if host.fingerprint not in agent_fps:
+            missing.setdefault(host.fingerprint, []).extend(
+                a for a in host.aliases if '*' not in a and '?' not in a
+            )
+
+    if not missing:
+        return
+
+    # Map fingerprint → key_ref name for display, using hostdata entries
+    fp_to_key: dict[str, str] = {}
+    for host in hosts:
+        if host.fingerprint and not fp_to_key.get(host.fingerprint):
+            for alias in host.aliases:
+                if key_ref := hostdata.get(alias, {}).get('key'):
+                    fp_to_key[host.fingerprint] = key_ref
+                    break
+
+    print('WARNING: SSH keys exported but not available in the SSH agent:', file=sys.stderr)
+    for fp, aliases in missing.items():
+        key_name = fp_to_key.get(fp, '')
+        key_info = f' ({key_name})' if key_name else ''
+        alias_list = ', '.join(sorted(set(aliases)))
+        print(
+            f'  {fp}{key_info}: {alias_list}',
+            file=sys.stderr,
+        )
+    print(
+        '  Check that the corresponding keys are enabled in the 1Password SSH agent.',
+        file=sys.stderr,
+    )
 
 
 def resolve_host_fields(
@@ -387,6 +465,8 @@ def cmd_generate(
         if password_count > 0:
             _warn_noexec_askpass(settings.askpass_dir)
 
+        _warn_missing_agent_keys(hosts, hostdata)
+
 
 def cmd_flush(settings: Settings, *, quiet: bool = False) -> None:
     """Remove the runtime config directory."""
@@ -416,6 +496,27 @@ def cmd_status(settings: Settings) -> None:
     print(f"Config: {conf}")
     print(f"Status: {status} (age: {age_min}m)")
     print(f"Managed hosts: {host_count}")
+
+
+def _agent_key_status(identity_line: str) -> str:
+    """Return an agent status suffix for an IdentityFile line, or empty string.
+
+    Parses the .pub path from the line, reconstructs the fingerprint (filenames
+    use '_' instead of '/'), and checks if it's loaded in the SSH agent.
+    Returns '  ✓ available in SSH agent', '  ⚠ NOT in SSH agent (...)', or ''.
+    """
+    parts = identity_line.strip().split(None, 1)
+    key_path = parts[1] if len(parts) == 2 else ''
+    if not key_path.endswith('.pub'):
+        return ''
+
+    fp = Path(key_path).stem.replace('_', '/')
+    agent_fps = _get_agent_fingerprints()
+    if agent_fps is None:
+        return ''
+    if fp in agent_fps:
+        return '  ✓ available in SSH agent'
+    return '  ⚠ NOT in SSH agent (check 1Password agent vault config)'
 
 
 def cmd_debug(alias: str, settings: Settings) -> None:
@@ -466,12 +567,13 @@ def cmd_debug(alias: str, settings: Settings) -> None:
 
         # Key reference
         key = entry.get('key')
-        has_identity = any('IdentityFile' in line for line in block_lines)
+        identity_line = next((line for line in block_lines if 'IdentityFile' in line), None)
         if key:
-            if has_identity:
-                print(f'    # Key: {key}')
-            else:
+            if not identity_line:
                 print(f'    # Key: {key}  ⚠ NOT RESOLVED (no IdentityFile generated)')
+            else:
+                agent_status = _agent_key_status(identity_line)
+                print(f'    # Key: {key}{agent_status}')
 
         # All fields with resolution status
         fields = entry.get('fields', {})

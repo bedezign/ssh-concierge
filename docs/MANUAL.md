@@ -558,9 +558,10 @@ The shell entry point delegates all flags to Python.
 
 - Each field's original value, resolved value (for references), and sensitivity status
 - Key references that failed to resolve are flagged with a warning
+- SSH agent status: whether the key is loaded in the SSH agent (`✓ available` or `⚠ NOT in SSH agent`)
 - Config age and staleness status
 
-Useful for diagnosing why a host isn't connecting as expected — wrong vault name in a key reference, unresolved hostname, stale cached values, etc.
+Useful for diagnosing why a host isn't connecting as expected — wrong vault name in a key reference, key not loaded in the agent, unresolved hostname, stale cached values, etc.
 
 ### Deploy key
 
@@ -666,6 +667,12 @@ To migrate a host from static config to 1Password: add the SSH Config section to
 **1Password locked / not signed in**:
 - The cold path fails silently (exit 0). SSH falls through to static config.
 - Sign in with `op signin` or unlock 1Password, then run `ssh-concierge --generate`.
+
+**"UNPROTECTED PRIVATE KEY FILE" error**:
+- This usually means `IdentityFile` points to a public key file, but the corresponding private key isn't available in the SSH agent.
+- Run `ssh-concierge --debug ALIAS` — look for `⚠ NOT in SSH agent` next to the key reference.
+- Fix: enable the key's vault in the 1Password SSH agent settings.
+- `--generate` also warns about all missing agent keys after generation.
 
 **Password injection fails with "permission denied"**:
 - The askpass script may be on a `noexec` filesystem (common with `/tmp` on RHEL/CentOS).

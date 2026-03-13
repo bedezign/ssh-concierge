@@ -94,6 +94,7 @@ Any 1Password item — Server, Login, Secure Note — can manage a host. Tag it 
 - **`{{alias}}` placeholder** — `{{alias}}.example.com` expands per alias (simpler alternative to regex)
 - **Any SSH directive** — `ProxyJump`, `ForwardAgent`, `LocalForward`, etc. — just add the field
 - **Custom fields** — store arbitrary data for use in clipboard templates
+- **Agent key validation** — `--generate` warns about exported keys not loaded in the SSH agent; `--debug` shows per-alias agent status
 - **Configurable** — optional TOML config for custom paths, TTL, and timeouts
 - **Atomic writes + lockfile** — safe under concurrent SSH connections
 
