@@ -11,7 +11,7 @@ import pytest
 
 from ssh_concierge.cli import (
     cmd_generate, cmd_flush, cmd_status, cmd_list, cmd_debug, main,
-    _parse_op_item_ref, _build_key_registry, _resolve_key_ref,
+    _build_key_registry, _resolve_key_ref,
     _load_cached_hostdata, _warn_noexec_askpass, _warn_missing_agent_keys,
     _get_agent_fingerprints, _agent_key_status, _write_env_sh,
     resolve_host_fields,
@@ -427,39 +427,6 @@ class TestLoadCachedHostdata:
         assert _load_cached_hostdata(runtime_dir / 'hostdata.json') == {}
 
 
-class TestParseOpItemRef:
-    def test_valid_reference(self):
-        assert _parse_op_item_ref('op://Work/MyKey') == ('Work', 'MyKey')
-
-    def test_vault_with_spaces(self):
-        assert _parse_op_item_ref('op://My Vault/Key Name') == ('My Vault', 'Key Name')
-
-    def test_no_prefix_still_parses(self):
-        """Without op:// prefix the string is split as-is."""
-        assert _parse_op_item_ref('Work/MyKey') == ('Work', 'MyKey')
-
-    def test_quoted_item_with_slashes(self):
-        assert _parse_op_item_ref('op://Work/"Laptop / SN-001234 / john.doe"') == ('Work', 'Laptop / SN-001234 / john.doe')
-
-    def test_url_encoded_item(self):
-        assert _parse_op_item_ref('op://Work/Laptop %2F SN-001234 %2F john.doe') == ('Work', 'Laptop / SN-001234 / john.doe')
-
-    def test_no_prefix_quoted(self):
-        assert _parse_op_item_ref('Work/"Laptop / SN-001234"') == ('Work', 'Laptop / SN-001234')
-
-    def test_invalid_no_slash(self):
-        with pytest.raises(ValueError):
-            _parse_op_item_ref('op://WorkMyKey')
-
-    def test_invalid_empty_vault(self):
-        with pytest.raises(ValueError):
-            _parse_op_item_ref('op:///MyKey')
-
-    def test_invalid_empty_title(self):
-        with pytest.raises(ValueError):
-            _parse_op_item_ref('op://Work/')
-
-
 class TestBuildKeyRegistry:
     def test_builds_from_items(self):
         items = [
@@ -591,6 +558,19 @@ class TestResolveKeyRef:
         assert 'invalid key reference' in err
         assert 'myhost' in err
 
+    def test_dot_in_item_position_rejected(self, capsys):
+        """Key ref with . in item position (op://./.) is rejected."""
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname=fv('10.0.0.1', 'hostname'),
+            key_ref='op://./.',
+        )
+        meta = ItemMeta(vault_id='v1', item_id='i1')
+        result = _resolve_key_ref(host, self._registry(), meta=meta)
+        assert result.public_key is None
+        err = capsys.readouterr().err
+        assert '"."' in err or 'cannot' in err
+
     def test_case_insensitive_lookup(self):
         host = HostConfig(
             aliases=['myhost'],
@@ -627,7 +607,7 @@ class TestResolveKeyRef:
         assert result.fingerprint == 'SHA256:qrs'
 
     def test_self_ref_resolved_via_seeded_cache(self):
-        """op://./SSH Config/key resolves to an item name via the seeded cache."""
+        """op://././SSH Config/key resolves to an item name via the seeded cache."""
         registry = {
             ('work', 'my ssh key'): ('ssh-ed25519 DDDD', 'SHA256:selfref'),
         }
@@ -637,7 +617,7 @@ class TestResolveKeyRef:
         host = HostConfig(
             aliases=['tunnel'],
             hostname=fv('10.0.0.1', 'hostname'),
-            key_ref='op://./SSH Config/key',
+            key_ref='op://././SSH Config/key',
         )
         result = _resolve_key_ref(host, registry, op, meta)
         assert result.public_key == 'ssh-ed25519 DDDD'
@@ -652,13 +632,28 @@ class TestResolveKeyRef:
         host = HostConfig(
             aliases=['tunnel'],
             hostname=fv('10.0.0.1', 'hostname'),
-            key_ref='op://./SSH Config/key',
+            key_ref='op://././SSH Config/key',
         )
         result = _resolve_key_ref(host, {}, op, meta)
         assert result.public_key is None
         err = capsys.readouterr().err
         assert 'could not be resolved' in err
         assert 'tunnel' in err
+
+    def test_same_vault_item_ref(self):
+        """op://./Item resolves via vault_name from meta."""
+        registry = {
+            ('work', 'my ssh key'): ('ssh-ed25519 FFFF', 'SHA256:samevault'),
+        }
+        meta = ItemMeta(vault_id='v1', item_id='i1', vault_name='Work')
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname=fv('10.0.0.1', 'hostname'),
+            key_ref='op://./My SSH Key',
+        )
+        result = _resolve_key_ref(host, registry, meta=meta)
+        assert result.public_key == 'ssh-ed25519 FFFF'
+        assert result.fingerprint == 'SHA256:samevault'
 
     def test_direct_op_ref_goes_straight_to_registry(self):
         """Non-self op:// key refs go directly to registry without resolution."""

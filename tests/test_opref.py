@@ -27,10 +27,16 @@ class TestSplitUriPath:
         assert _split_uri_path('V/A %2F B %2F C/f') == ['V', 'A / B / C', 'f']
 
     def test_self_ref(self):
-        assert _split_uri_path('./field') == ['.', 'field']
+        assert _split_uri_path('././field') == ['.', '.', 'field']
 
     def test_self_ref_with_section(self):
-        assert _split_uri_path('./Section/field') == ['.', 'Section', 'field']
+        assert _split_uri_path('././Section/field') == ['.', '.', 'Section', 'field']
+
+    def test_same_vault_item(self):
+        assert _split_uri_path('./Item') == ['.', 'Item']
+
+    def test_same_vault_item_field(self):
+        assert _split_uri_path('./Item/field') == ['.', 'Item', 'field']
 
     def test_no_slashes(self):
         assert _split_uri_path('JustAValue') == ['JustAValue']
@@ -54,7 +60,7 @@ class TestOpRefParse:
         assert ref.field_path == 'field'
         assert ref.sensitive is False
 
-    def test_incomplete_reference(self):
+    def test_item_level_reference(self):
         ref = OpRef.parse('op://Vault/Item')
         assert ref.vault == 'Vault'
         assert ref.item == 'Item'
@@ -75,26 +81,43 @@ class TestOpRefParse:
         assert ref.field_path == 'field'
 
     def test_self_ref(self):
-        ref = OpRef.parse('op://./password')
+        ref = OpRef.parse('op://././password')
         assert ref.is_self_ref is True
+        assert ref.vault == '.'
+        assert ref.item == '.'
         assert ref.field_path == 'password'
 
     def test_self_ref_with_section(self):
-        ref = OpRef.parse('op://./SSH Config/password')
+        ref = OpRef.parse('op://././SSH Config/password')
         assert ref.is_self_ref is True
         assert ref.field_path == 'SSH Config/password'
 
     def test_sensitive_self_ref(self):
-        ref = OpRef.parse('ops://./password')
+        ref = OpRef.parse('ops://././password')
         assert ref.is_self_ref is True
         assert ref.sensitive is True
 
-    def test_no_prefix(self):
-        ref = OpRef.parse('Work/MyKey')
-        assert ref.vault == 'Work'
-        assert ref.item == 'MyKey'
+    def test_same_vault_item_ref(self):
+        ref = OpRef.parse('op://./Item')
+        assert ref.is_same_vault is True
+        assert ref.is_self_ref is False
+        assert ref.vault == '.'
+        assert ref.item == 'Item'
         assert ref.field_path is None
-        assert ref.sensitive is False
+
+    def test_same_vault_field_ref(self):
+        ref = OpRef.parse('op://./Item/field')
+        assert ref.is_same_vault is True
+        assert ref.is_self_ref is False
+        assert ref.vault == '.'
+        assert ref.item == 'Item'
+        assert ref.field_path == 'field'
+
+    def test_same_vault_field_ref_with_section(self):
+        ref = OpRef.parse('op://./Item/Section/field')
+        assert ref.is_same_vault is True
+        assert ref.item == 'Item'
+        assert ref.field_path == 'Section/field'
 
     def test_quoted_item_name(self):
         ref = OpRef.parse('op://Work/"Laptop / SN-001234 / john.doe"')
@@ -120,16 +143,6 @@ class TestOpRefParse:
         assert ref.item == 'Laptop / SN-001234'
         assert ref.field_path == 'password'
 
-    def test_no_prefix_quoted(self):
-        ref = OpRef.parse('Work/"Laptop / SN-001234"')
-        assert ref.vault == 'Work'
-        assert ref.item == 'Laptop / SN-001234'
-
-    def test_no_prefix_url_encoded(self):
-        ref = OpRef.parse('Work/Laptop %2F SN-001234')
-        assert ref.vault == 'Work'
-        assert ref.item == 'Laptop / SN-001234'
-
     def test_invalid_no_slash(self):
         with pytest.raises(ValueError):
             OpRef.parse('op://VaultItem')
@@ -151,13 +164,36 @@ class TestOpRefParse:
         assert ref.vault == 'My Vault'
         assert ref.item == 'Key Name'
 
+    def test_dot_in_item_requires_dot_in_vault(self):
+        """op://Vault/./field is rejected — . in item requires . in vault."""
+        with pytest.raises(ValueError, match=r'"." in item position'):
+            OpRef.parse('op://Vault/./field')
+
+    def test_dot_in_item_without_field_rejected(self):
+        """op://Vault/. is rejected — . in item requires . in vault."""
+        with pytest.raises(ValueError, match=r'"." in item position'):
+            OpRef.parse('op://Vault/.')
+
 
 class TestOpRefProperties:
     def test_is_self_ref_true(self):
-        assert OpRef.parse('op://./pw').is_self_ref is True
+        assert OpRef.parse('op://././pw').is_self_ref is True
 
-    def test_is_self_ref_false(self):
+    def test_is_self_ref_false_for_full_ref(self):
         assert OpRef.parse('op://V/I/f').is_self_ref is False
+
+    def test_is_self_ref_false_for_same_vault(self):
+        """op://./Item/field is same-vault but NOT a self-ref."""
+        assert OpRef.parse('op://./Item/field').is_self_ref is False
+
+    def test_is_same_vault_true_for_self_ref(self):
+        assert OpRef.parse('op://././pw').is_same_vault is True
+
+    def test_is_same_vault_true_for_cross_item(self):
+        assert OpRef.parse('op://./Item/pw').is_same_vault is True
+
+    def test_is_same_vault_false(self):
+        assert OpRef.parse('op://V/I/f').is_same_vault is False
 
     def test_is_complete_with_field(self):
         assert OpRef.parse('op://V/I/f').is_complete is True
@@ -182,77 +218,94 @@ class TestOpRefWithField:
 
 
 class TestOpRefNormalized:
-    def test_self_ref_expanded_and_complete(self):
-        ref = OpRef.parse('op://./password')
+    def test_self_ref_expanded(self):
+        ref = OpRef.parse('op://././password')
         n = ref.normalized('v1', 'i1')
         assert n.vault == 'v1'
         assert n.item == 'i1'
         assert n.field_path == 'password'
 
-    def test_incomplete_gets_default_field(self):
+    def test_same_vault_cross_item_expanded(self):
+        ref = OpRef.parse('op://./OtherItem/field')
+        n = ref.normalized('v1', 'i1')
+        assert n.vault == 'v1'
+        assert n.item == 'OtherItem'
+        assert n.field_path == 'field'
+
+    def test_same_vault_item_ref_expanded(self):
+        ref = OpRef.parse('op://./Item')
+        n = ref.normalized('v1', 'i1')
+        assert n.vault == 'v1'
+        assert n.item == 'Item'
+        assert n.field_path is None
+
+    def test_item_level_ref_stays_incomplete(self):
+        """Item-level refs (no field) stay incomplete — no auto-append."""
         ref = OpRef.parse('op://Vault/Item')
         n = ref.normalized()
-        assert n.field_path == 'password'
-
-    def test_custom_default_field(self):
-        ref = OpRef.parse('op://Vault/Item')
-        n = ref.normalized(default_field='hostname')
-        assert n.field_path == 'hostname'
+        assert n.field_path is None
 
     def test_complete_ref_unchanged(self):
         ref = OpRef.parse('op://Vault/Item/field')
         n = ref.normalized('v1', 'i1')
         assert n is ref
 
-    def test_self_ref_without_meta_stays_self(self):
-        ref = OpRef.parse('op://./password')
+    def test_self_ref_without_meta_stays(self):
+        ref = OpRef.parse('op://././password')
         n = ref.normalized()
         assert n.is_self_ref is True
         assert n.field_path == 'password'
 
     def test_sensitive_self_ref(self):
-        ref = OpRef.parse('ops://./secret')
+        ref = OpRef.parse('ops://././secret')
         n = ref.normalized('v1', 'i1')
         assert n.sensitive is True
         assert n.vault == 'v1'
 
     def test_chained_for_storage(self):
-        result = OpRef.parse('op://./password').normalized('v1', 'i1').for_storage()
+        result = OpRef.parse('op://././password').normalized('v1', 'i1').for_storage()
         assert result == 'op://v1/i1/password'
 
     def test_chained_for_op(self):
-        result = OpRef.parse('ops://./secret').normalized('v1', 'i1').for_op()
+        result = OpRef.parse('ops://././secret').normalized('v1', 'i1').for_op()
         assert result == 'op://v1/i1/secret'
 
 
-class TestOpRefExpandSelf:
+class TestOpRefExpandDots:
     def test_expands_self_ref(self):
-        ref = OpRef.parse('op://./password')
-        expanded = ref.expand_self('vault-abc', 'item-123')
+        ref = OpRef.parse('op://././password')
+        expanded = ref.expand_dots('vault-abc', 'item-123')
         assert expanded.vault == 'vault-abc'
         assert expanded.item == 'item-123'
         assert expanded.field_path == 'password'
         assert expanded.is_self_ref is False
 
     def test_expands_self_ref_with_section(self):
-        ref = OpRef.parse('op://./SSH Config/password')
-        expanded = ref.expand_self('v1', 'i1')
+        ref = OpRef.parse('op://././SSH Config/password')
+        expanded = ref.expand_dots('v1', 'i1')
         assert expanded.field_path == 'SSH Config/password'
 
+    def test_expands_same_vault_cross_item(self):
+        ref = OpRef.parse('op://./OtherItem/field')
+        expanded = ref.expand_dots('v1', 'i1')
+        assert expanded.vault == 'v1'
+        assert expanded.item == 'OtherItem'  # item NOT replaced (not '.')
+        assert expanded.field_path == 'field'
+
     def test_preserves_sensitivity(self):
-        ref = OpRef.parse('ops://./password')
-        expanded = ref.expand_self('v1', 'i1')
+        ref = OpRef.parse('ops://././password')
+        expanded = ref.expand_dots('v1', 'i1')
         assert expanded.sensitive is True
 
     def test_noop_for_full_ref(self):
         ref = OpRef.parse('op://Vault/Item/field')
-        same = ref.expand_self('v', 'i')
+        same = ref.expand_dots('v', 'i')
         assert same is ref
 
     def test_expand_via_parent_ref(self):
         parent = OpRef.parse('op://Vault/Item/field')
-        child = OpRef.parse('op://./password')
-        expanded = child.expand_self(parent.vault, parent.item)
+        child = OpRef.parse('op://././password')
+        expanded = child.expand_dots(parent.vault, parent.item)
         assert expanded.vault == 'Vault'
         assert expanded.item == 'Item'
         assert expanded.field_path == 'password'
@@ -284,14 +337,22 @@ class TestOpRefForOp:
         assert ref.for_op() == 'op://V/A %2F B/field'
 
     def test_self_ref(self):
-        ref = OpRef.parse('op://./password')
-        assert ref.for_op() == 'op://./password'
+        ref = OpRef.parse('op://././password')
+        assert ref.for_op() == 'op://././password'
 
     def test_self_ref_with_section(self):
-        ref = OpRef.parse('op://./Section/field')
-        assert ref.for_op() == 'op://./Section/field'
+        ref = OpRef.parse('op://././Section/field')
+        assert ref.for_op() == 'op://././Section/field'
 
-    def test_incomplete(self):
+    def test_same_vault_item_ref(self):
+        ref = OpRef.parse('op://./Item')
+        assert ref.for_op() == 'op://./Item'
+
+    def test_same_vault_field_ref(self):
+        ref = OpRef.parse('op://./Item/field')
+        assert ref.for_op() == 'op://./Item/field'
+
+    def test_item_level(self):
         ref = OpRef.parse('op://V/I')
         assert ref.for_op() == 'op://V/I'
 
@@ -310,5 +371,9 @@ class TestOpRefForStorage:
         assert ref.for_storage() == 'ops://Work/Laptop %2F SN-001234/password'
 
     def test_self_ref(self):
-        ref = OpRef.parse('ops://./password')
-        assert ref.for_storage() == 'ops://./password'
+        ref = OpRef.parse('ops://././password')
+        assert ref.for_storage() == 'ops://././password'
+
+    def test_same_vault_ref(self):
+        ref = OpRef.parse('op://./Item/field')
+        assert ref.for_storage() == 'op://./Item/field'

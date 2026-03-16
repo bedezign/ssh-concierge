@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import fcntl
-import itertools
 import json
 import os
 import re
@@ -22,7 +21,7 @@ from ssh_concierge.expand import expand_host_config
 from ssh_concierge.field import FieldValue, normalize_original, resolve_chain
 from ssh_concierge.models import HostConfig
 from ssh_concierge.onepassword import OnePassword, parse_item_to_host_configs
-from ssh_concierge.opref import OpRef
+from ssh_concierge.opref import SELF_MARKER, OpRef
 from ssh_concierge.password import ItemMeta
 from ssh_concierge.settings import Settings, load_settings
 from ssh_concierge.wrap import lookup_hostdata
@@ -161,7 +160,7 @@ def resolve_host_fields(
     """Resolve all FieldValues on a HostConfig, returning a new HostConfig.
 
     For each FieldValue:
-    - Normalize self-refs (op://./field → op://vault/item/field)
+    - Normalize dot-refs (op://././field → op://vault/item/field)
     - Check cache (skip resolution if original unchanged)
     - Resolve non-sensitive references via op.read()
     - Sensitive fields stay unresolved (resolved at SSH time)
@@ -238,16 +237,17 @@ def _build_hostdata_entry(host: HostConfig) -> dict | None:
 
 def _iter_host_fields(host: HostConfig):
     """Yield (name, FieldValue) for all resolvable fields on a HostConfig."""
-    named = [
+    for name, fv in [
         ('password', host.password),
         ('otp', host.otp),
         ('hostname', host.hostname),
         ('port', host.port),
         ('user', host.user),
-    ]
-    scalar_fields = ((name, fv) for name, fv in named if fv is not None)
-    dict_fields = itertools.chain(host.extra_directives.items(), host.custom_fields.items())
-    yield from itertools.chain(scalar_fields, dict_fields)
+    ]:
+        if fv is not None:
+            yield name, fv
+    yield from host.extra_directives.items()
+    yield from host.custom_fields.items()
 
 
 def _load_cached_hostdata(hostdata_file: Path) -> dict[str, dict[str, FieldValue]]:
@@ -270,15 +270,6 @@ def _load_cached_hostdata(hostdata_file: Path) -> dict[str, dict[str, FieldValue
         for alias, entry in data.items()
         if entry.get('fields')
     }
-
-
-def _parse_op_item_ref(ref: str) -> tuple[str, str]:
-    """Parse an op://Vault/Item reference into (vault, title).
-
-    Supports quoted names ("Item / Name") and URL-encoded slashes (%2F).
-    """
-    parsed = OpRef.parse(ref)
-    return parsed.vault, parsed.item
 
 
 def _extract_key_pair(item: dict) -> tuple[str, str] | None:
@@ -324,9 +315,10 @@ def _resolve_key_ref(
 ) -> HostConfig:
     """Resolve a key_ref on a HostConfig against the key registry.
 
-    If key_ref is an op:// reference (e.g. op://./SSH Config/key), resolves it
-    via the seeded cache first (no CLI calls) to get the actual item identifier.
-    Then looks up the resolved value in the key registry.
+    key_ref must be an op:// reference:
+    - op://Vault/Item (fully explicit item ref)
+    - op://./Item (same-vault item ref)
+    - op://././SSH Config/key (self-ref field, resolved via seeded cache)
 
     If the host already has a public_key or has no key_ref, returns unchanged.
     """
@@ -336,23 +328,37 @@ def _resolve_key_ref(
     aliases = ', '.join(host.aliases)
     key_ref = host.key_ref
 
-    # Resolve self-references (op://./...) via seeded cache (no CLI calls)
-    if '://' in key_ref and op is not None:
-        ref = OpRef.parse(key_ref)
-        if ref.is_self_ref:
-            if not meta:
-                print(f'ssh-concierge: cannot resolve self-ref "{key_ref}" without item metadata (host {aliases})', file=sys.stderr)
-                return host
-            resolved = op.read(ref.normalized(meta.vault_id, meta.item_id).for_op(), cache_only=True)
-            if not resolved:
-                print(f'ssh-concierge: key reference "{key_ref}" could not be resolved (host {aliases})', file=sys.stderr)
-                return host
-            key_ref = resolved
-
     try:
-        vault, title = _parse_op_item_ref(key_ref)
+        ref = OpRef.parse(key_ref)
     except ValueError:
         print(f'ssh-concierge: invalid key reference "{key_ref}" on host {aliases}', file=sys.stderr)
+        return host
+
+    # Resolve field-level refs (e.g. op://././SSH Config/key) via seeded cache
+    if ref.is_complete and op is not None:
+        if ref.is_same_vault:
+            if not meta:
+                print(f'ssh-concierge: cannot resolve dot-ref "{key_ref}" without item metadata (host {aliases})', file=sys.stderr)
+                return host
+            resolved = op.read(ref.normalized(meta.vault_id, meta.item_id).for_op(), cache_only=True)
+        else:
+            resolved = op.read(ref.for_op(), cache_only=True)
+        if not resolved:
+            print(f'ssh-concierge: key reference "{key_ref}" could not be resolved (host {aliases})', file=sys.stderr)
+            return host
+        # Re-parse the resolved value as an item ref
+        try:
+            ref = OpRef.parse(resolved)
+        except ValueError:
+            print(f'ssh-concierge: key reference "{key_ref}" resolved to invalid ref "{resolved}" (host {aliases})', file=sys.stderr)
+            return host
+
+    # At this point ref should be an item-level ref (vault/item, no field)
+    vault = meta.vault_name if ref.is_same_vault and meta else ref.vault
+    title = ref.item
+
+    if title == SELF_MARKER:
+        print(f'ssh-concierge: key reference cannot use "." in item position (host {aliases})', file=sys.stderr)
         return host
 
     key = key_registry.get((vault.lower(), title.lower()))

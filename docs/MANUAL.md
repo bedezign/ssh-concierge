@@ -273,11 +273,12 @@ Any field value (not just `password`) can contain `op://` references with option
 | Format | Example | Behavior |
 |--------|---------|----------|
 | `op://Vault/Item/field` | `op://Work/ServerLogin/password` | Used directly with `op read` |
-| `op://Vault/Item` | `op://Work/ServerLogin` | `/password` appended automatically |
-| `op://./field` | `op://./hostname` | Expanded using the current item's vault/item IDs |
-| `op://./Section/field` | `op://./SSH Config/password` | Self-reference with explicit section |
-| `ops://...` | `ops://./password` | Same as `op://` but marks the field as **sensitive** |
-| `ref\|\|fallback` | `op://./hostname\|\|10.0.0.1` | Try reference first, fall back to literal |
+| `op://././field` | `op://././hostname` | Self-reference: expanded using the current item's vault/item IDs |
+| `op://././Section/field` | `op://././SSH Config/password` | Self-reference with explicit section |
+| `op://./Item/field` | `op://./ServerLogin/password` | Same-vault cross-item reference |
+| `op://./Item` | `op://./ServerLogin` | Same-vault item reference (for `key` field) |
+| `ops://...` | `ops://././password` | Same as `op://` but marks the field as **sensitive** |
+| `ref\|\|fallback` | `op://././hostname\|\|10.0.0.1` | Try reference first, fall back to literal |
 | Literal | `deploy` | Used as-is |
 
 ### Names with slashes or spaces
@@ -307,7 +308,7 @@ This is an ssh-concierge extension — the `op` CLI itself does not support quot
 Split on `||`, try each segment left-to-right. Each segment is either a reference (contains `://`) or a literal. First non-empty result wins.
 
 ```
-op://./hostname||op://Vault/Backup/hostname||10.0.0.1
+op://././hostname||op://Vault/Backup/hostname||10.0.0.1
 ```
 
 This tries three sources: the item's own hostname, a backup reference, then a hardcoded fallback.
@@ -330,7 +331,7 @@ Non-sensitive references are resolved at `--generate` time and cached in `hostda
 
 Hosts that require password auth can store an `op://` reference in the `password` field. The SSH/SCP wrapper resolves it at connection time via `op read` and injects it via `SSH_ASKPASS`.
 
-**Recommended**: Use `op://./password` to reference the current item's own password field, or `op://Vault/Item/password` for a cross-item reference.
+**Recommended**: Use `op://././password` to reference the current item's own password field, or `op://Vault/Item/password` for a cross-item reference.
 
 ### How it works
 
@@ -397,7 +398,7 @@ Per-host overrides are passed as environment variables (`__SSH_CONCIERGE_PW_PROM
 
 Hosts that require a one-time password (TOTP) after the password prompt can store an `op://` reference in the `otp` field. The wrapper resolves the current TOTP code at connection time and passes it to the askpass script via `__SSH_CONCIERGE_OTP`.
 
-**Recommended**: Use `op://./one-time password` to reference the item's own TOTP field, or `ops://Vault/Item/one-time password` for a cross-item reference. For TOTP, 1Password stores the seed — the CLI resolves it to the current code at read time.
+**Recommended**: Use `op://././one-time password` to reference the item's own TOTP field, or `ops://Vault/Item/one-time password` for a cross-item reference. For TOTP, 1Password stores the seed — the CLI resolves it to the current code at read time.
 
 The `otp` field is always treated as sensitive (never cached resolved to disk), regardless of whether you use `op://` or `ops://`.
 
@@ -410,8 +411,8 @@ If OTP resolution fails (1Password locked, reference invalid), the connection st
 | Field | Value |
 |-------|-------|
 | `aliases` | `secure-server` |
-| `password` | `op://./password` |
-| `otp` | `op://./one-time password` |
+| `password` | `op://././password` |
+| `otp` | `op://././one-time password` |
 | `otp_prompt` | `*erification*code*` |
 
 ### Setup
@@ -450,7 +451,7 @@ Unrecognized placeholders are left as-is.
 
 ```
 clipboard: sudo -i\n{password}\n
-password:  op://./password
+password:  op://././password
 ```
 
 When you `ssh myhost`, the clipboard contains:
@@ -529,8 +530,8 @@ This is useful for storing arbitrary data alongside a host — for example, a `s
 | Field | Value |
 |-------|-------|
 | `aliases` | `prod-server` |
-| `password` | `op://./password` |
-| `sudo_password` | `ops://./sudo_password` |
+| `password` | `op://././password` |
+| `sudo_password` | `ops://././sudo_password` |
 | `clipboard` | `sudo -i\n{sudo_password}\n` |
 
 The `sudo_password` field is resolved at SSH time (marked sensitive via `ops://`) and injected into the clipboard template.
@@ -646,7 +647,7 @@ $XDG_RUNTIME_DIR/ssh-concierge/
 
 ### Field caching
 
-Non-sensitive field values are cached in `hostdata.json` (original reference + resolved value). On subsequent `--generate` runs, if the original reference hasn't changed, the cached resolved value is checked against the freshly fetched item data. If the target value has changed (e.g., a `hostname` field pointing to `op://./website` where `website` was updated), the field is automatically re-resolved — no `--no-cache` needed.
+Non-sensitive field values are cached in `hostdata.json` (original reference + resolved value). On subsequent `--generate` runs, if the original reference hasn't changed, the cached resolved value is checked against the freshly fetched item data. If the target value has changed (e.g., a `hostname` field pointing to `op://././website` where `website` was updated), the field is automatically re-resolved — no `--no-cache` needed.
 
 This stale detection works for references to fields on the same item or other managed items (since their data is already fetched). For references to unmanaged items, use `--no-cache` to force re-resolution.
 

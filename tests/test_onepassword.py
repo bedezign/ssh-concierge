@@ -519,11 +519,11 @@ class TestParseItemToHostConfigs:
                 {'id': 'pk', 'label': 'public key', 'value': 'ssh-ed25519 AAAA'},
                 {'id': 'fp', 'label': 'fingerprint', 'value': 'SHA256:x'},
                 {'id': 'f1', 'label': 'aliases', 'value': 'myhost', 'section': {'id': 's', 'label': 'SSH Config'}},
-                {'id': 'f2', 'label': 'password', 'value': 'op://./password', 'section': {'id': 's', 'label': 'SSH Config'}},
+                {'id': 'f2', 'label': 'password', 'value': 'op://././password', 'section': {'id': 's', 'label': 'SSH Config'}},
             ],
         }
         hosts = parse_item_to_host_configs(item)
-        assert hosts[0].password.raw == 'op://./password'
+        assert hosts[0].password.raw == 'op://././password'
         assert hosts[0].password.sensitive is True
 
     def test_password_not_in_extra_directives(self):

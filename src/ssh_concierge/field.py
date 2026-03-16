@@ -50,17 +50,12 @@ def is_sensitive(raw: str, field_name: str) -> bool:
     return any(s in name for s in SENSITIVE_FIELD_NAMES) or OPS_PREFIX in raw
 
 
-def _normalize_ref_segment(segment: str, vault_id: str, item_id: str) -> str:
-    """Normalize a single reference segment for storage using OpRef."""
-    return OpRef.parse(segment).normalized(vault_id, item_id).for_storage()
-
-
 def normalize_original(raw: str, vault_id: str, item_id: str) -> str:
-    """Normalize self-refs and ops:// in a raw value for storage.
+    """Normalize dot-refs and ops:// in a raw value for storage.
 
-    Expands op://./field → op://vault_id/item_id/field in each segment
+    Expands op://././field → op://vault_id/item_id/field and
+    op://./Item/field → op://vault_id/Item/field in each segment
     of a || chain so the wrapper can resolve without item metadata.
-    Also normalizes incomplete references (appends /password).
     Preserves ops:// prefix (sensitivity marker) — only expands the path.
     """
     segments = raw.split(CHAIN_SEPARATOR)
@@ -71,7 +66,7 @@ def normalize_original(raw: str, vault_id: str, item_id: str) -> str:
             normalized.append(segment)
             continue
 
-        normalized.append(_normalize_ref_segment(stripped, vault_id, item_id))
+        normalized.append(OpRef.parse(stripped).normalized(vault_id, item_id).for_storage())
 
     return CHAIN_SEPARATOR.join(normalized)
 

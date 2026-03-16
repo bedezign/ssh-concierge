@@ -37,9 +37,9 @@ class ItemMeta:
 def normalize_reference(raw: str, item_meta: ItemMeta, section_label: str) -> str:
     """Normalize a raw field value into a full op:// reference.
 
-    - op://./field → op://{vault}/{item}/field
+    - op://././field → op://{vault}/{item}/field
+    - op://./Item/field → op://{vault}/Item/field
     - op://Vault/Item/field → unchanged
-    - op://Vault/Item → append /password (incomplete reference)
     - literal → op://{vault}/{item}/{section}/password  (points back to the field)
     """
     if not raw.startswith(OP_PREFIX) and '://' not in raw:
@@ -59,7 +59,7 @@ def resolve_password(
     Supports:
       - None / empty → None
       - Literal value (no op:// or other :// prefix) → returned as-is
-      - op://./field → expanded to full op:// ref, then read
+      - op://././field → expanded to full op:// ref, then read
       - op://Vault/Item/field → read directly via `op read`
       - || fallback chains
 

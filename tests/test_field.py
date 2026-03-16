@@ -30,10 +30,10 @@ class TestClassifyType:
         assert classify_type('ops://Vault/Item/field') == 'reference'
 
     def test_reference_self(self):
-        assert classify_type('op://./password') == 'reference'
+        assert classify_type('op://././password') == 'reference'
 
     def test_reference_with_fallback(self):
-        assert classify_type('op://./pw||fallback') == 'reference'
+        assert classify_type('op://././pw||fallback') == 'reference'
 
     def test_template(self):
         assert classify_type('{{alias}}.example.com') == 'template'
@@ -43,7 +43,7 @@ class TestClassifyType:
 
     def test_reference_takes_precedence_over_template(self):
         # If both :// and {{ are present, reference wins (checked first)
-        assert classify_type('op://./{{alias}}') == 'reference'
+        assert classify_type('op://././{{alias}}') == 'reference'
 
 
 class TestIsSensitive:
@@ -78,7 +78,7 @@ class TestIsSensitive:
         assert is_sensitive('ops://Vault/Item/field', 'hostname') is True
 
     def test_ops_in_chain(self):
-        assert is_sensitive('op://./pw||ops://Vault/Backup/pw', 'api_key') is True
+        assert is_sensitive('op://././pw||ops://Vault/Backup/pw', 'api_key') is True
 
     def test_non_sensitive_field(self):
         assert is_sensitive('10.0.0.1', 'hostname') is False
@@ -92,16 +92,20 @@ class TestIsSensitive:
 
 class TestNormalizeOriginal:
     def test_self_ref_expanded(self):
-        result = normalize_original('op://./password', 'v1', 'i1')
+        result = normalize_original('op://././password', 'v1', 'i1')
         assert result == 'op://v1/i1/password'
 
     def test_self_ref_with_section(self):
-        result = normalize_original('op://./SSH Config/password', 'v1', 'i1')
+        result = normalize_original('op://././SSH Config/password', 'v1', 'i1')
         assert result == 'op://v1/i1/SSH Config/password'
 
     def test_ops_self_ref_expanded(self):
-        result = normalize_original('ops://./password', 'v1', 'i1')
+        result = normalize_original('ops://././password', 'v1', 'i1')
         assert result == 'ops://v1/i1/password'
+
+    def test_same_vault_cross_item_expanded(self):
+        result = normalize_original('op://./OtherItem/field', 'v1', 'i1')
+        assert result == 'op://v1/OtherItem/field'
 
     def test_full_ref_unchanged(self):
         result = normalize_original('op://Vault/Item/field', 'v1', 'i1')
@@ -112,19 +116,20 @@ class TestNormalizeOriginal:
         assert result == '10.0.0.1'
 
     def test_chain_with_self_ref(self):
-        result = normalize_original('op://./pw||op://Vault/Backup/pw', 'v1', 'i1')
+        result = normalize_original('op://././pw||op://Vault/Backup/pw', 'v1', 'i1')
         assert result == 'op://v1/i1/pw||op://Vault/Backup/pw'
 
     def test_chain_with_literal_fallback(self):
-        result = normalize_original('op://./hostname||10.0.0.1', 'v1', 'i1')
+        result = normalize_original('op://././hostname||10.0.0.1', 'v1', 'i1')
         assert result == 'op://v1/i1/hostname||10.0.0.1'
 
-    def test_incomplete_ref_gets_password(self):
+    def test_item_level_ref_unchanged(self):
+        """Item-level refs (no field) are not modified — no auto-append."""
         result = normalize_original('op://Vault/Item', 'v1', 'i1')
-        assert result == 'op://Vault/Item/password'
+        assert result == 'op://Vault/Item'
 
     def test_ops_self_ref_in_chain(self):
-        result = normalize_original('ops://./secret||ops://./backup_secret', 'v1', 'i1')
+        result = normalize_original('ops://././secret||ops://././backup_secret', 'v1', 'i1')
         assert result == 'ops://v1/i1/secret||ops://v1/i1/backup_secret'
 
 
@@ -181,9 +186,15 @@ class TestResolveChain:
 
     def test_self_ref_expanded(self):
         op = _mock_op(return_value='pw')
-        result = resolve_chain('op://./password', op, vault_id='v1', item_id='i1')
+        result = resolve_chain('op://././password', op, vault_id='v1', item_id='i1')
         op.read.assert_called_once_with('op://v1/i1/password', cache_only=False)
         assert result == 'pw'
+
+    def test_same_vault_cross_item_expanded(self):
+        op = _mock_op(return_value='value')
+        result = resolve_chain('op://./OtherItem/field', op, vault_id='v1', item_id='i1')
+        op.read.assert_called_once_with('op://v1/OtherItem/field', cache_only=False)
+        assert result == 'value'
 
     def test_ops_normalized(self):
         op = _mock_op(return_value='secret')
@@ -191,10 +202,11 @@ class TestResolveChain:
         op.read.assert_called_once_with('op://Vault/Item/field', cache_only=False)
         assert result == 'secret'
 
-    def test_incomplete_ref_gets_password_appended(self):
-        op = _mock_op(return_value='pw')
+    def test_item_level_ref_stays_incomplete(self):
+        """Item-level refs (no field_path) are passed as-is to op.read."""
+        op = _mock_op(return_value='value')
         resolve_chain('op://Vault/Item', op)
-        op.read.assert_called_once_with('op://Vault/Item/password', cache_only=False)
+        op.read.assert_called_once_with('op://Vault/Item', cache_only=False)
 
 
 class TestFieldValue:

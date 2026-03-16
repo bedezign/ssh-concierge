@@ -57,20 +57,20 @@ class TestResolvePassword:
     def test_self_reference_expands(self):
         op = _mock_op(return_value='the-password')
         meta = ItemMeta(vault_id='vault-abc', item_id='item-123')
-        result = resolve_password('op://./password', op, meta)
+        result = resolve_password('op://././password', op, meta)
         assert result == 'the-password'
         op.read.assert_called_once_with('op://vault-abc/item-123/password', cache_only=False)
 
     def test_self_reference_with_section(self):
         op = _mock_op(return_value='pw')
         meta = ItemMeta(vault_id='v1', item_id='i1')
-        result = resolve_password('op://./SSH Config/password', op, meta)
+        result = resolve_password('op://././SSH Config/password', op, meta)
         assert result == 'pw'
         op.read.assert_called_once_with('op://v1/i1/SSH Config/password', cache_only=False)
 
     def test_self_reference_without_meta_returns_none(self):
         op = _mock_op()
-        result = resolve_password('op://./password', op)
+        result = resolve_password('op://././password', op)
         assert result is None
 
     def test_ops_prefix_normalized_to_op(self):
@@ -87,7 +87,7 @@ class TestResolvePassword:
     def test_self_ref_op_read_failure_returns_none(self):
         op = _mock_op(return_value=None)
         meta = ItemMeta(vault_id='v', item_id='i')
-        result = resolve_password('op://./password', op, meta)
+        result = resolve_password('op://././password', op, meta)
         assert result is None
 
 
@@ -109,12 +109,12 @@ class TestNormalizeReferenceCompat:
 
     def test_self_reference(self):
         meta = ItemMeta(vault_id='vault-abc', item_id='item-123')
-        ref = normalize_reference('op://./password', meta, 'SSH Config')
+        ref = normalize_reference('op://././password', meta, 'SSH Config')
         assert ref == 'op://vault-abc/item-123/password'
 
     def test_self_reference_with_section(self):
         meta = ItemMeta(vault_id='v1', item_id='i1')
-        ref = normalize_reference('op://./SSH Config/password', meta, 'SSH Config')
+        ref = normalize_reference('op://././SSH Config/password', meta, 'SSH Config')
         assert ref == 'op://v1/i1/SSH Config/password'
 
     def test_named_section(self):
@@ -122,15 +122,16 @@ class TestNormalizeReferenceCompat:
         ref = normalize_reference('literal-pw', meta, 'SSH Config: prod')
         assert ref == 'op://v/i/SSH Config: prod/password'
 
-    def test_incomplete_op_reference_appends_password(self):
+    def test_item_level_ref_unchanged(self):
+        """Item-level refs (no field) are not auto-appended."""
         meta = ItemMeta(vault_id='v', item_id='i')
         ref = normalize_reference('op://MyVault/MyLogin', meta, 'SSH Config')
-        assert ref == 'op://MyVault/MyLogin/password'
+        assert ref == 'op://MyVault/MyLogin'
 
-    def test_incomplete_op_reference_simple(self):
-        meta = ItemMeta(vault_id='v', item_id='i')
-        ref = normalize_reference('op://Vault/Item', meta, 'SSH Config')
-        assert ref == 'op://Vault/Item/password'
+    def test_same_vault_cross_item(self):
+        meta = ItemMeta(vault_id='v1', item_id='i1')
+        ref = normalize_reference('op://./OtherItem/password', meta, 'SSH Config')
+        assert ref == 'op://v1/OtherItem/password'
 
 
 class TestNormalizeReference:
@@ -146,13 +147,14 @@ class TestNormalizeReference:
 
     def test_self_reference(self):
         meta = ItemMeta(vault_id='vault-abc', item_id='item-123')
-        ref = normalize_reference('op://./password', meta, 'SSH Config')
+        ref = normalize_reference('op://././password', meta, 'SSH Config')
         assert ref == 'op://vault-abc/item-123/password'
 
-    def test_incomplete_appends_password(self):
+    def test_item_level_ref_unchanged(self):
+        """Item-level refs stay as-is — no auto-append of /password."""
         meta = ItemMeta(vault_id='v', item_id='i')
         ref = normalize_reference('op://Vault/Item', meta, 'SSH Config')
-        assert ref == 'op://Vault/Item/password'
+        assert ref == 'op://Vault/Item'
 
 
 class TestResolvePasswordFallbackChain:

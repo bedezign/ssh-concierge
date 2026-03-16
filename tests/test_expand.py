@@ -212,12 +212,12 @@ class TestExpandHostConfig:
         host = HostConfig(
             aliases=["master1", "worker1"],
             hostname=fv(r"s/(.+)/\1.example.com/", "hostname"),
-            password=fv("op://./password", "password"),
+            password=fv("op://././password", "password"),
         )
         result = expand_host_config(host)
         assert len(result) == 2
-        assert result[0].password.raw == "op://./password"
-        assert result[1].password.raw == "op://./password"
+        assert result[0].password.raw == "op://././password"
+        assert result[1].password.raw == "op://././password"
 
     def test_password_preserved_no_expansion(self):
         host = HostConfig(

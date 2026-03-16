@@ -84,7 +84,7 @@ Any 1Password item — Server, Login, Secure Note — can manage a host. Tag it 
 - **Transparent password auth** — `op://` reference in `password` field, SSH/SCP connects without prompts. Optional `otp` field for TOTP two-factor auth
 - **Clipboard injection** — auto-copy commands/passwords to clipboard on connect (e.g., `sudo -i\n{password}`)
 - **`op://` references in any field** — hostname, user, or any directive can reference 1Password values
-- **`||` fallback chains** — `op://./hostname||10.0.0.1` — try the reference, fall back to a literal
+- **`||` fallback chains** — `op://././hostname||10.0.0.1` — try the reference, fall back to a literal
 - **Sensitive fields** — `ops://` prefix ensures values are never cached on disk
 - **Per-host filtering** — `on` field limits config generation to specific machines
 - **Cross-item key references** — `key` field shares SSH keys across items

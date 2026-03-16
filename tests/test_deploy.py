@@ -281,7 +281,7 @@ class TestCmdDeployKey:
     @patch('ssh_concierge.deploy.deploy_key_to_host', return_value=True)
     @patch('ssh_concierge.deploy.resolve_password', return_value='resolved-pw')
     def test_password_passed_to_deploy(self, mock_resolve_pw, mock_deploy, mock_fetch, settings):
-        host_with_pw = _host(['pwhost'], password='op://./password')
+        host_with_pw = _host(['pwhost'], password='op://././password')
         mock_fetch.return_value = [(host_with_pw, DEFAULT_META)]
         cmd_deploy_key('pwhost', False, settings)
         mock_deploy.assert_called_once()
@@ -295,8 +295,8 @@ class TestCmdDeployKey:
     ):
         """Password resolved once and reused for all siblings."""
         hosts = [
-            (_host(['s1'], password='op://./password'), DEFAULT_META),
-            (_host(['s2'], password='op://./password'), DEFAULT_META),
+            (_host(['s1'], password='op://././password'), DEFAULT_META),
+            (_host(['s2'], password='op://././password'), DEFAULT_META),
         ]
         mock_fetch.return_value = hosts
         cmd_deploy_key('s1', True, settings)
