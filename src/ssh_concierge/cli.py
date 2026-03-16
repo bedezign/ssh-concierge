@@ -352,8 +352,15 @@ def _resolve_key_ref(
         except ValueError:
             print(f'ssh-concierge: key reference "{key_ref}" resolved to invalid ref "{resolved}" (host {aliases})', file=sys.stderr)
             return host
+        if ref.is_complete:
+            print(f'ssh-concierge: key reference "{key_ref}" resolved to field ref, expected item ref (host {aliases})', file=sys.stderr)
+            return host
 
     # At this point ref should be an item-level ref (vault/item, no field)
+    if ref.is_same_vault and not meta:
+        print(f'ssh-concierge: cannot resolve same-vault ref "{key_ref}" without item metadata (host {aliases})', file=sys.stderr)
+        return host
+
     vault = meta.vault_name if ref.is_same_vault and meta else ref.vault
     title = ref.item
 

@@ -671,6 +671,52 @@ class TestResolveKeyRef:
         assert result.public_key == 'ssh-ed25519 EEEE'
         op.read.assert_not_called()
 
+    def test_same_vault_item_ref_without_meta(self, capsys):
+        """op://./Item without meta gives clear error, not misleading 'not found'."""
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname=fv('10.0.0.1', 'hostname'),
+            key_ref='op://./My SSH Key',
+        )
+        result = _resolve_key_ref(host, self._registry())
+        assert result.public_key is None
+        err = capsys.readouterr().err
+        assert 'cannot resolve same-vault ref' in err
+        assert 'myhost' in err
+
+    def test_explicit_field_ref_resolved_via_cache(self):
+        """op://Vault/Item/SSH Config/key resolved via seeded cache."""
+        registry = {
+            ('work', 'target key'): ('ssh-ed25519 GGGG', 'SHA256:explicit'),
+        }
+        op = MagicMock()
+        op.read.return_value = 'op://Work/Target Key'
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname=fv('10.0.0.1', 'hostname'),
+            key_ref='op://Work/MyItem/SSH Config/key',
+        )
+        result = _resolve_key_ref(host, registry, op)
+        assert result.public_key == 'ssh-ed25519 GGGG'
+        assert result.fingerprint == 'SHA256:explicit'
+        op.read.assert_called_once_with('op://Work/MyItem/SSH Config/key', cache_only=True)
+
+    def test_field_ref_resolves_to_field_ref_rejected(self, capsys):
+        """Key ref that resolves to another field ref (not item ref) is rejected."""
+        op = MagicMock()
+        op.read.return_value = 'op://Work/Item/field'
+        host = HostConfig(
+            aliases=['myhost'],
+            hostname=fv('10.0.0.1', 'hostname'),
+            key_ref='op://././SSH Config/key',
+        )
+        meta = ItemMeta(vault_id='v1', item_id='i1')
+        result = _resolve_key_ref(host, {}, op, meta)
+        assert result.public_key is None
+        err = capsys.readouterr().err
+        assert 'field ref' in err
+        assert 'expected item ref' in err
+
 
 class TestCmdDebugKeyRef:
     def test_alias_with_key_reference(self, runtime_dir: Path, capsys):
