@@ -171,6 +171,11 @@ def resolve_host_fields(
             # Auto-complete item-level refs (e.g. password → /password)
             completed = complete_field_refs(fv.original, name)
             if completed != fv.original:
+                print(
+                    f'ssh-concierge: incomplete reference in field "{name}" '
+                    f'on item {meta.display_name} — auto-completed to "{completed}"',
+                    file=sys.stderr,
+                )
                 fv = dataclasses.replace(fv, original=completed)
 
             # Normalize self-refs so the wrapper can resolve without item metadata

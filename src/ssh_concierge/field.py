@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -10,8 +9,6 @@ from ssh_concierge.opref import OP_PREFIX, OPS_PREFIX, OpRef
 
 if TYPE_CHECKING:
     from ssh_concierge.onepassword import OnePassword
-
-logger = logging.getLogger(__name__)
 
 CHAIN_SEPARATOR = '||'
 TEMPLATE_OPEN = '{{'
@@ -80,12 +77,6 @@ def complete_field_refs(raw: str, field_name: str) -> str:
         auto_field = _AUTO_COMPLETE_FIELDS.get(field_name)
         if auto_field:
             completed = ref.with_field(auto_field)
-            logger.warning(
-                'Incomplete reference "%s" in field "%s" — auto-completed to "%s"',
-                stripped,
-                field_name,
-                completed.for_storage(),
-            )
             result.append(segment.replace(stripped, completed.for_storage()))
         else:
             raise ValueError(
