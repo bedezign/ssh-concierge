@@ -149,7 +149,7 @@ def main() -> None:
             if resolved and resolved.get('password'):
                 env_vars = create_askpass(
                     resolved['password'],
-                    askpass_dir=settings.askpass_dir,
+                    askpass_file=settings.askpass_file,
                     password_patterns=settings.askpass_password,
                     otp_patterns=settings.askpass_otp,
                     pw_prompt=entry.get('password_prompt'),
@@ -161,5 +161,3 @@ def main() -> None:
 
     # Fallback: exec real binary with original args
     os.execv(real_binary, [tool, *args])
-
-

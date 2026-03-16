@@ -7,11 +7,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ssh_concierge.config import _safe_filename
 from ssh_concierge.expand import expand_host_config
 from ssh_concierge.models import HostConfig
 from ssh_concierge.onepassword import OnePassword, parse_item_to_host_configs
 from ssh_concierge.password import ItemMeta, create_askpass, resolve_password
+from ssh_concierge.settings import Settings
 
 
 def fetch_all_hosts(op: OnePassword) -> list[tuple[HostConfig, ItemMeta]]:
@@ -74,6 +74,7 @@ def deploy_key_to_host(
     host: HostConfig,
     key_path: Path,
     password: str | None = None,
+    askpass_file: Path | None = None,
 ) -> bool:
     """Deploy a public key to a host using ssh-copy-id.
 
@@ -85,7 +86,7 @@ def deploy_key_to_host(
     print(f'Deploying key to {host.aliases[0]}...')
     try:
         if password:
-            env_vars = create_askpass(password)
+            env_vars = create_askpass(password, askpass_file=askpass_file)
             env = {**os.environ, **env_vars}
             result = subprocess.run(
                 args,
@@ -106,25 +107,25 @@ def deploy_key_to_host(
     return result.returncode == 0
 
 
-def _ensure_key_file(host: HostConfig, runtime_dir: Path) -> Path | None:
+def _ensure_key_file(host: HostConfig, settings: Settings) -> Path | None:
     """Get the public key file path, generating runtime config if needed."""
     if not host.fingerprint or not host.public_key:
         print(f'Error: no SSH key associated with {host.aliases[0]}', file=sys.stderr)
         return None
 
-    key_path = runtime_dir / 'keys' / f'{_safe_filename(host.fingerprint)}.pub'
+    key_path = settings.key_file(host.fingerprint)
     if not key_path.exists():
         # Generate runtime config to create key files
         from ssh_concierge.cli import cmd_generate
 
-        cmd_generate(runtime_dir)
+        cmd_generate(settings)
     if not key_path.exists():
         print(f'Error: key file not found at {key_path}', file=sys.stderr)
         return None
     return key_path
 
 
-def cmd_deploy_key(alias: str, all_siblings: bool, runtime_dir: Path) -> None:
+def cmd_deploy_key(alias: str, all_siblings: bool, settings: Settings) -> None:
     """Deploy SSH key to a host (and optionally its siblings)."""
     op = OnePassword()
     hosts = fetch_all_hosts(op)
@@ -136,7 +137,7 @@ def cmd_deploy_key(alias: str, all_siblings: bool, runtime_dir: Path) -> None:
 
     host, item_meta = match
 
-    key_path = _ensure_key_file(host, runtime_dir)
+    key_path = _ensure_key_file(host, settings)
     if key_path is None:
         sys.exit(1)
 
@@ -153,7 +154,7 @@ def cmd_deploy_key(alias: str, all_siblings: bool, runtime_dir: Path) -> None:
 
     failed: list[str] = []
     for target in targets:
-        if not deploy_key_to_host(target, key_path, password=resolved_pw):
+        if not deploy_key_to_host(target, key_path, password=resolved_pw, askpass_file=settings.askpass_file):
             failed.append(target.aliases[0])
 
     if failed:

@@ -169,7 +169,7 @@ class TestResolvePasswordFallbackChain:
 
 class TestCreateAskpass:
     def test_returns_correct_env_vars(self, tmp_path):
-        env = create_askpass('mypassword', askpass_dir=tmp_path)
+        env = create_askpass('mypassword', askpass_file=tmp_path / 'askpass')
         assert 'SSH_ASKPASS' in env
         assert env['SSH_ASKPASS_REQUIRE'] == 'force'
         assert env['__SSH_CONCIERGE_PW'] == 'mypassword'
@@ -179,15 +179,15 @@ class TestCreateAskpass:
 
     def test_script_is_generic(self, tmp_path):
         """Script contains no password — only reads from env var."""
-        env = create_askpass('s3cret', askpass_dir=tmp_path)
+        env = create_askpass('s3cret', askpass_file=tmp_path / 'askpass')
         content = Path(env['SSH_ASKPASS']).read_text()
         assert 's3cret' not in content
         assert '__SSH_CONCIERGE_PW' in content
 
     def test_script_reused_across_calls(self, tmp_path):
         """Same script file is reused for different passwords."""
-        env1 = create_askpass('pw1', askpass_dir=tmp_path)
-        env2 = create_askpass('pw2', askpass_dir=tmp_path)
+        env1 = create_askpass('pw1', askpass_file=tmp_path / 'askpass')
+        env2 = create_askpass('pw2', askpass_file=tmp_path / 'askpass')
         assert env1['SSH_ASKPASS'] == env2['SSH_ASKPASS']
         assert env1['__SSH_CONCIERGE_PW'] == 'pw1'
         assert env2['__SSH_CONCIERGE_PW'] == 'pw2'
@@ -197,7 +197,7 @@ class TestCreateAskpass:
         import subprocess
 
         pw = 'testpw123'
-        env = create_askpass(pw, askpass_dir=tmp_path)
+        env = create_askpass(pw, askpass_file=tmp_path / 'askpass')
         result = subprocess.run(
             [env['SSH_ASKPASS'], "user@host's password: "],
             capture_output=True,
@@ -211,7 +211,7 @@ class TestCreateAskpass:
         import subprocess
 
         pw = '$HOME `whoami` "quoted" \\backslash'
-        env = create_askpass(pw, askpass_dir=tmp_path)
+        env = create_askpass(pw, askpass_file=tmp_path / 'askpass')
         result = subprocess.run(
             [env['SSH_ASKPASS'], 'Password: '],
             capture_output=True,
@@ -224,7 +224,7 @@ class TestCreateAskpass:
         """Non-password prompts are forwarded to the terminal via /dev/tty."""
         import subprocess
 
-        env = create_askpass('secret', askpass_dir=tmp_path)
+        env = create_askpass('secret', askpass_file=tmp_path / 'askpass')
         # Simulate a host key prompt — no /dev/tty in test, so the script
         # will fail to write to /dev/tty and exit non-zero.
         result = subprocess.run(
@@ -275,7 +275,7 @@ class TestAskpassScriptExecution:
     def test_password_prompt_matches(self, tmp_path):
         import subprocess
 
-        env = create_askpass('secret', askpass_dir=tmp_path)
+        env = create_askpass('secret', askpass_file=tmp_path / 'askpass')
         result = subprocess.run(
             [env['SSH_ASKPASS'], 'Password: '],
             capture_output=True, text=True,
@@ -287,7 +287,7 @@ class TestAskpassScriptExecution:
         import subprocess
 
         env = create_askpass(
-            'secret', askpass_dir=tmp_path,
+            'secret', askpass_file=tmp_path / 'askpass',
             password_patterns=('*credentials*',),
         )
         result = subprocess.run(
@@ -302,7 +302,7 @@ class TestAskpassScriptExecution:
         import subprocess
 
         env = create_askpass(
-            'secret', askpass_dir=tmp_path,
+            'secret', askpass_file=tmp_path / 'askpass',
             otp_patterns=('*erification*code*',),
         )
         result = subprocess.run(
@@ -317,7 +317,7 @@ class TestAskpassScriptExecution:
         import subprocess
 
         env = create_askpass(
-            'secret', askpass_dir=tmp_path,
+            'secret', askpass_file=tmp_path / 'askpass',
             password_patterns=('*assword*',),
             pw_prompt='*enter credentials*',
         )
@@ -338,7 +338,7 @@ class TestAskpassScriptExecution:
 
         # Global patterns would NOT match 'Custom prompt:'
         env = create_askpass(
-            'secret', askpass_dir=tmp_path,
+            'secret', askpass_file=tmp_path / 'askpass',
             password_patterns=('*assword*',),
             pw_prompt='*Custom*',
         )
@@ -356,7 +356,7 @@ class TestAskpassScriptExecution:
         """Unrecognized prompts are prefixed with [unrecognized prompt]."""
         import subprocess
 
-        env = create_askpass('secret', askpass_dir=tmp_path)
+        env = create_askpass('secret', askpass_file=tmp_path / 'askpass')
         result = subprocess.run(
             [env['SSH_ASKPASS'], 'Something else: '],
             capture_output=True, text=True,
@@ -366,27 +366,27 @@ class TestAskpassScriptExecution:
         assert 'secret' not in result.stdout
 
     def test_no_pw_prompt_env_var_when_not_set(self, tmp_path):
-        env = create_askpass('secret', askpass_dir=tmp_path)
+        env = create_askpass('secret', askpass_file=tmp_path / 'askpass')
         assert '__SSH_CONCIERGE_PW_PROMPT' not in env
         assert '__SSH_CONCIERGE_OTP_PROMPT' not in env
 
     def test_otp_prompt_env_var_when_set(self, tmp_path):
         env = create_askpass(
-            'secret', askpass_dir=tmp_path,
+            'secret', askpass_file=tmp_path / 'askpass',
             otp_prompt='*verification*',
         )
         assert env['__SSH_CONCIERGE_OTP_PROMPT'] == '*verification*'
 
     def test_otp_env_var_set_when_provided(self, tmp_path):
-        env = create_askpass('secret', askpass_dir=tmp_path, otp='123456')
+        env = create_askpass('secret', askpass_file=tmp_path / 'askpass', otp='123456')
         assert env['__SSH_CONCIERGE_OTP'] == '123456'
 
     def test_otp_env_var_absent_when_not_provided(self, tmp_path):
-        env = create_askpass('secret', askpass_dir=tmp_path)
+        env = create_askpass('secret', askpass_file=tmp_path / 'askpass')
         assert '__SSH_CONCIERGE_OTP' not in env
 
     def test_otp_env_var_absent_when_none(self, tmp_path):
-        env = create_askpass('secret', askpass_dir=tmp_path, otp=None)
+        env = create_askpass('secret', askpass_file=tmp_path / 'askpass', otp=None)
         assert '__SSH_CONCIERGE_OTP' not in env
 
     def test_otp_prompt_outputs_otp_value(self, tmp_path):
@@ -394,7 +394,7 @@ class TestAskpassScriptExecution:
         import subprocess
 
         env = create_askpass(
-            'secret', askpass_dir=tmp_path,
+            'secret', askpass_file=tmp_path / 'askpass',
             otp_patterns=('*erification*code*',),
             otp='987654',
         )
@@ -413,7 +413,7 @@ class TestAskpassScriptExecution:
         import subprocess
 
         env = create_askpass(
-            'secret', askpass_dir=tmp_path,
+            'secret', askpass_file=tmp_path / 'askpass',
             otp_prompt='*enter code*',
             otp='112233',
         )

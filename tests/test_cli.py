@@ -388,12 +388,12 @@ class TestMain:
 
 class TestLoadCachedHostdata:
     def test_no_file(self, runtime_dir: Path):
-        assert _load_cached_hostdata(runtime_dir) == {}
+        assert _load_cached_hostdata(runtime_dir / 'hostdata.json') == {}
 
     def test_empty_file(self, runtime_dir: Path):
         runtime_dir.mkdir(parents=True)
         (runtime_dir / 'hostdata.json').write_text('{}')
-        assert _load_cached_hostdata(runtime_dir) == {}
+        assert _load_cached_hostdata(runtime_dir / 'hostdata.json') == {}
 
     def test_loads_fields(self, runtime_dir: Path):
         runtime_dir.mkdir(parents=True)
@@ -406,7 +406,7 @@ class TestLoadCachedHostdata:
             },
         }
         (runtime_dir / 'hostdata.json').write_text(json.dumps(hd))
-        result = _load_cached_hostdata(runtime_dir)
+        result = _load_cached_hostdata(runtime_dir / 'hostdata.json')
         assert 'myhost' in result
         assert result['myhost']['hostname'].original == 'op://V/I/hostname'
         assert result['myhost']['hostname'].resolved == '10.0.0.1'
@@ -418,13 +418,13 @@ class TestLoadCachedHostdata:
             'myhost': {'clipboard': 'hello'},
         }
         (runtime_dir / 'hostdata.json').write_text(json.dumps(hd))
-        result = _load_cached_hostdata(runtime_dir)
+        result = _load_cached_hostdata(runtime_dir / 'hostdata.json')
         assert 'myhost' not in result
 
     def test_bad_json(self, runtime_dir: Path):
         runtime_dir.mkdir(parents=True)
         (runtime_dir / 'hostdata.json').write_text('not json')
-        assert _load_cached_hostdata(runtime_dir) == {}
+        assert _load_cached_hostdata(runtime_dir / 'hostdata.json') == {}
 
 
 class TestParseOpItemRef:

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-import os
 import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -166,7 +164,7 @@ def _build_askpass_script(
 def create_askpass(
     password: str,
     *,
-    askpass_dir: Path | None = None,
+    askpass_file: Path,
     password_patterns: tuple[str, ...] = ('*assword*',),
     otp_patterns: tuple[str, ...] = (),
     pw_prompt: str | None = None,
@@ -186,28 +184,24 @@ def create_askpass(
       - __SSH_CONCIERGE_PW_PROMPT: per-host password prompt override (if set)
       - __SSH_CONCIERGE_OTP_PROMPT: per-host OTP prompt override (if set)
     """
-    if askpass_dir is None:
-        xdg = os.environ.get('XDG_RUNTIME_DIR')
-        askpass_dir = Path(xdg) / 'ssh-concierge' if xdg else Path(tempfile.gettempdir())
-    askpass_dir.mkdir(parents=True, exist_ok=True)
-    script_path = askpass_dir / 'askpass'
+    askpass_file.parent.mkdir(parents=True, exist_ok=True)
 
     script_content = _build_askpass_script(password_patterns, otp_patterns)
 
     # Only write when missing or contents differ.
     needs_write = True
-    if script_path.exists():
+    if askpass_file.exists():
         try:
-            needs_write = script_path.read_text() != script_content
+            needs_write = askpass_file.read_text() != script_content
         except OSError:
             pass
 
     if needs_write:
-        script_path.write_text(script_content)
-        script_path.chmod(stat.S_IRWXU)  # 0700
+        askpass_file.write_text(script_content)
+        askpass_file.chmod(stat.S_IRWXU)  # 0700
 
     env = {
-        'SSH_ASKPASS': str(script_path),
+        'SSH_ASKPASS': str(askpass_file),
         'SSH_ASKPASS_REQUIRE': 'force',
         '__SSH_CONCIERGE_PW': password,
     }

@@ -19,6 +19,7 @@ from ssh_concierge.deploy import (
 from ssh_concierge.field import FieldValue
 from ssh_concierge.models import HostConfig
 from ssh_concierge.password import ItemMeta
+from ssh_concierge.settings import Settings
 
 
 # --- fixtures ---
@@ -74,6 +75,16 @@ ALL_HOSTS = [
 ]
 
 
+def _make_settings(runtime_dir: Path) -> Settings:
+    return Settings(
+        runtime_dir=runtime_dir,
+        askpass_dir=runtime_dir,
+        ttl=3600,
+        op_timeout=120,
+        config_file=None,
+    )
+
+
 @pytest.fixture()
 def runtime_dir(tmp_path: Path) -> Path:
     d = tmp_path / 'ssh-concierge'
@@ -82,6 +93,11 @@ def runtime_dir(tmp_path: Path) -> Path:
     keys.mkdir()
     (keys / 'SHA256:abc.pub').write_text('ssh-ed25519 AAAAkey\n')
     return d
+
+
+@pytest.fixture()
+def settings(runtime_dir: Path) -> Settings:
+    return _make_settings(runtime_dir)
 
 
 # --- resolve_host ---
@@ -187,10 +203,10 @@ class TestDeployKeyToHost:
         assert deploy_key_to_host(host, Path('/tmp/key.pub')) is False
 
     @patch('ssh_concierge.deploy.subprocess.run')
-    def test_with_password_uses_askpass(self, mock_run):
+    def test_with_password_uses_askpass(self, mock_run, tmp_path):
         mock_run.return_value = MagicMock(returncode=0)
         host = _host(['myhost'])
-        result = deploy_key_to_host(host, Path('/tmp/key.pub'), password='secret')
+        result = deploy_key_to_host(host, Path('/tmp/key.pub'), password='secret', askpass_file=tmp_path / 'askpass')
         assert result is True
         call_args = mock_run.call_args
         # Should use ssh-copy-id directly (no setsid)
@@ -217,8 +233,8 @@ class TestCmdDeployKey:
     @patch('ssh_concierge.deploy.fetch_all_hosts', return_value=ALL_HOSTS)
     @patch('ssh_concierge.deploy.deploy_key_to_host', return_value=True)
     @patch('ssh_concierge.deploy.resolve_password', return_value=None)
-    def test_single_host(self, mock_resolve_pw, mock_deploy, mock_fetch, runtime_dir):
-        cmd_deploy_key('worker1', False, runtime_dir)
+    def test_single_host(self, mock_resolve_pw, mock_deploy, mock_fetch, settings):
+        cmd_deploy_key('worker1', False, settings)
         mock_deploy.assert_called_once()
         deployed_host = mock_deploy.call_args[0][0]
         assert deployed_host.aliases == ['worker1']
@@ -226,8 +242,8 @@ class TestCmdDeployKey:
     @patch('ssh_concierge.deploy.fetch_all_hosts', return_value=ALL_HOSTS)
     @patch('ssh_concierge.deploy.deploy_key_to_host', return_value=True)
     @patch('ssh_concierge.deploy.resolve_password', return_value=None)
-    def test_all_siblings(self, mock_resolve_pw, mock_deploy, mock_fetch, runtime_dir):
-        cmd_deploy_key('worker1', True, runtime_dir)
+    def test_all_siblings(self, mock_resolve_pw, mock_deploy, mock_fetch, settings):
+        cmd_deploy_key('worker1', True, settings)
         # worker1 + worker2 + worker3 (not wildcard, not other section/key)
         assert mock_deploy.call_count == 3
         deployed_aliases = [call[0][0].aliases[0] for call in mock_deploy.call_args_list]
@@ -236,38 +252,38 @@ class TestCmdDeployKey:
         assert 'worker3' in deployed_aliases
 
     @patch('ssh_concierge.deploy.fetch_all_hosts', return_value=ALL_HOSTS)
-    def test_alias_not_found(self, mock_fetch, runtime_dir):
+    def test_alias_not_found(self, mock_fetch, settings):
         with pytest.raises(SystemExit) as exc_info:
-            cmd_deploy_key('nonexistent', False, runtime_dir)
+            cmd_deploy_key('nonexistent', False, settings)
         assert exc_info.value.code == 1
 
     @patch('ssh_concierge.deploy.fetch_all_hosts', return_value=ALL_HOSTS)
     @patch('ssh_concierge.deploy.deploy_key_to_host')
     @patch('ssh_concierge.deploy.resolve_password', return_value=None)
-    def test_partial_failure(self, mock_resolve_pw, mock_deploy, mock_fetch, runtime_dir):
+    def test_partial_failure(self, mock_resolve_pw, mock_deploy, mock_fetch, settings):
         mock_deploy.side_effect = [True, False, True]
         with pytest.raises(SystemExit) as exc_info:
-            cmd_deploy_key('worker1', True, runtime_dir)
+            cmd_deploy_key('worker1', True, settings)
         assert exc_info.value.code == 1
 
     @patch('ssh_concierge.deploy.fetch_all_hosts')
-    def test_no_key_on_host(self, mock_fetch, runtime_dir):
+    def test_no_key_on_host(self, mock_fetch, settings):
         host_no_key = HostConfig(
             aliases=['nokey'],
             section_label='SSH Config',
         )
         mock_fetch.return_value = [(host_no_key, DEFAULT_META)]
         with pytest.raises(SystemExit) as exc_info:
-            cmd_deploy_key('nokey', False, runtime_dir)
+            cmd_deploy_key('nokey', False, settings)
         assert exc_info.value.code == 1
 
     @patch('ssh_concierge.deploy.fetch_all_hosts')
     @patch('ssh_concierge.deploy.deploy_key_to_host', return_value=True)
     @patch('ssh_concierge.deploy.resolve_password', return_value='resolved-pw')
-    def test_password_passed_to_deploy(self, mock_resolve_pw, mock_deploy, mock_fetch, runtime_dir):
+    def test_password_passed_to_deploy(self, mock_resolve_pw, mock_deploy, mock_fetch, settings):
         host_with_pw = _host(['pwhost'], password='op://./password')
         mock_fetch.return_value = [(host_with_pw, DEFAULT_META)]
-        cmd_deploy_key('pwhost', False, runtime_dir)
+        cmd_deploy_key('pwhost', False, settings)
         mock_deploy.assert_called_once()
         assert mock_deploy.call_args[1]['password'] == 'resolved-pw'
 
@@ -275,7 +291,7 @@ class TestCmdDeployKey:
     @patch('ssh_concierge.deploy.deploy_key_to_host', return_value=True)
     @patch('ssh_concierge.deploy.resolve_password', return_value='shared-pw')
     def test_all_siblings_share_resolved_password(
-        self, mock_resolve_pw, mock_deploy, mock_fetch, runtime_dir
+        self, mock_resolve_pw, mock_deploy, mock_fetch, settings
     ):
         """Password resolved once and reused for all siblings."""
         hosts = [
@@ -283,7 +299,7 @@ class TestCmdDeployKey:
             (_host(['s2'], password='op://./password'), DEFAULT_META),
         ]
         mock_fetch.return_value = hosts
-        cmd_deploy_key('s1', True, runtime_dir)
+        cmd_deploy_key('s1', True, settings)
         # resolve_password called once
         mock_resolve_pw.assert_called_once()
         # Both deploys get the same resolved password

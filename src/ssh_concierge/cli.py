@@ -43,9 +43,8 @@ def _write_env_sh(settings: Settings) -> None:
     )
 
     # Always write to runtime dir
-    env_path = settings.runtime_dir / 'env.sh'
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    env_path.write_text(content)
+    settings.env_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.env_file.write_text(content)
 
     # Also write next to config file if one exists (shell entry point looks here first)
     if settings.config_file:
@@ -170,7 +169,25 @@ def resolve_host_fields(
 
     def _resolve_field(name: str, fv: FieldValue) -> FieldValue:
         try:
-            return _resolve_field_inner(name, fv)
+            # Normalize self-refs so the wrapper can resolve without item metadata
+            normalized = normalize_original(fv.original, meta.vault_id, meta.item_id)
+            if normalized != fv.original:
+                fv = dataclasses.replace(fv, original=normalized)
+
+            if fv.sensitive:
+                return fv  # Don't resolve at generation time
+
+            cached = cached_fields.get(name) if cached_fields and not no_cache else None
+            if not fv.needs_resolution(cached):
+                # Original unchanged — but the target value may have changed.
+                # Check if the resolved value is still current (cache-only, no CLI calls).
+                if cached and cached.field_type == 'reference':  # type: ignore[union-attr]
+                    fresh = resolve_chain(fv.original, op, cache_only=True)
+                    if fresh is not None and fresh != cached.resolved:  # type: ignore[union-attr]
+                        return fv.resolve(op, vault_id=meta.vault_id, item_id=meta.item_id)
+                return cached  # type: ignore[return-value]
+
+            return fv.resolve(op, vault_id=meta.vault_id, item_id=meta.item_id)
         except ValueError as exc:
             print(
                 f'ssh-concierge: bad reference in field "{name}" '
@@ -178,27 +195,6 @@ def resolve_host_fields(
                 file=sys.stderr,
             )
             return fv
-
-    def _resolve_field_inner(name: str, fv: FieldValue) -> FieldValue:
-        # Normalize self-refs so the wrapper can resolve without item metadata
-        normalized = normalize_original(fv.original, meta.vault_id, meta.item_id)
-        if normalized != fv.original:
-            fv = dataclasses.replace(fv, original=normalized)
-
-        if fv.sensitive:
-            return fv  # Don't resolve at generation time
-
-        cached = cached_fields.get(name) if cached_fields and not no_cache else None
-        if not fv.needs_resolution(cached):
-            # Original unchanged — but the target value may have changed.
-            # Check if the resolved value is still current (cache-only, no CLI calls).
-            if cached and cached.field_type == 'reference':  # type: ignore[union-attr]
-                fresh = resolve_chain(fv.original, op, cache_only=True)
-                if fresh is not None and fresh != cached.resolved:  # type: ignore[union-attr]
-                    return fv.resolve(op, vault_id=meta.vault_id, item_id=meta.item_id)
-            return cached  # type: ignore[return-value]
-
-        return fv.resolve(op, vault_id=meta.vault_id, item_id=meta.item_id)
 
     def _resolve_optional(name: str, fv: FieldValue | None) -> FieldValue | None:
         return _resolve_field(name, fv) if fv else None
@@ -254,16 +250,15 @@ def _iter_host_fields(host: HostConfig):
     yield from itertools.chain(scalar_fields, dict_fields)
 
 
-def _load_cached_hostdata(runtime_dir: Path) -> dict[str, dict[str, FieldValue]]:
+def _load_cached_hostdata(hostdata_file: Path) -> dict[str, dict[str, FieldValue]]:
     """Load cached field data from the existing host data cache.
 
     Returns {alias: {field_name: FieldValue}}.
     """
-    hd_path = runtime_dir / 'hostdata.json'
-    if not hd_path.is_file():
+    if not hostdata_file.is_file():
         return {}
     try:
-        data = json.loads(hd_path.read_text())
+        data = json.loads(hostdata_file.read_text())
     except (json.JSONDecodeError, OSError):
         return {}
 
@@ -375,18 +370,16 @@ def cmd_generate(
     no_cache: bool = False,
 ) -> None:
     """Query 1Password and regenerate the runtime config."""
-    runtime_dir = settings.runtime_dir
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = runtime_dir / ".lock"
+    settings.runtime_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(lock_path, "w") as lock_file:
+    with open(settings.lock_file, "w") as lock_file:
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             # Another process holds the lock — check if config is now fresh
-            conf = settings.hosts_file
-            if conf.exists():
-                age = time.time() - conf.stat().st_mtime
+            hosts_file = settings.hosts_file
+            if hosts_file.exists():
+                age = time.time() - hosts_file.stat().st_mtime
                 if age < settings.ttl:
                     if not quiet:
                         print("Config is fresh (generated by another process)")
@@ -394,8 +387,8 @@ def cmd_generate(
             # Wait for lock (blocking)
             fcntl.flock(lock_file, fcntl.LOCK_EX)
             # Double-check after acquiring lock
-            if conf.exists():
-                age = time.time() - conf.stat().st_mtime
+            if hosts_file.exists():
+                age = time.time() - hosts_file.stat().st_mtime
                 if age < settings.ttl:
                     if not quiet:
                         print("Config is fresh (generated by another process)")
@@ -407,7 +400,7 @@ def cmd_generate(
         op = OnePassword(op_timeout=settings.op_timeout)
 
         # Load cached hostdata for cache comparison
-        cached_hostdata = _load_cached_hostdata(runtime_dir) if not no_cache else {}
+        cached_hostdata = _load_cached_hostdata(settings.hostdata_file) if not no_cache else {}
 
         item_ids = op.list_managed_item_ids()
         hosts = []
@@ -458,7 +451,15 @@ def cmd_generate(
                         if '*' not in alias and '?' not in alias:
                             hostdata[alias] = entry
 
-        generate_runtime_config(hosts, runtime_dir, hostdata or None)
+        generate_runtime_config(
+            hosts,
+            runtime_dir=settings.runtime_dir,
+            keys_dir=settings.keys_dir,
+            hosts_file=settings.hosts_file,
+            hostdata_file=settings.hostdata_file,
+            key_file=settings.key_file,
+            hostdata=hostdata or None,
+        )
         _write_env_sh(settings)
 
         password_count = sum(
@@ -471,9 +472,9 @@ def cmd_generate(
                 f"Generated: {len(hosts)} hosts from {items_processed} items"
                 f" ({password_count} password, {clipboard_count} clipboard)"
             )
-            print(f"Config:    {runtime_dir / 'hosts.conf'}")
+            print(f"Config:    {settings.hosts_file}")
             if hostdata:
-                print(f"Hostdata:  {runtime_dir / 'hostdata.json'}")
+                print(f"Hostdata:  {settings.hostdata_file}")
 
         if password_count > 0:
             _warn_noexec_askpass(settings.askpass_dir)
@@ -534,7 +535,6 @@ def _agent_key_status(identity_line: str) -> str:
 
 def cmd_debug(alias: str, settings: Settings) -> None:
     """Show the generated config block for a given alias."""
-    runtime_dir = settings.runtime_dir
     conf = settings.hosts_file
     if not conf.exists():
         print('No config generated yet. Run: ssh-concierge --generate')
@@ -571,7 +571,7 @@ def cmd_debug(alias: str, settings: Settings) -> None:
     print('\n'.join(block_lines))
 
     # Look up hostdata
-    entry = lookup_hostdata(alias, runtime_dir / 'hostdata.json')
+    entry = lookup_hostdata(alias, settings.hostdata_file)
     if entry:
         # Host filter
         on_filter = entry.get('on')
@@ -695,4 +695,4 @@ def main() -> None:
     elif args.debug:
         cmd_debug(args.debug, settings)
     elif args.deploy_key:
-        cmd_deploy_key(args.deploy_key, args.all, settings.runtime_dir)
+        cmd_deploy_key(args.deploy_key, args.all, settings)

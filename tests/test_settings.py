@@ -238,7 +238,34 @@ class TestSettingsGet:
         with pytest.raises(KeyError):
             self._settings(tmp_path).get('nonexistent')
 
+    def test_get_env_file(self, tmp_path: Path):
+        assert self._settings(tmp_path).get('env_file') == str(tmp_path / 'runtime' / 'env.sh')
+
+    def test_get_lock_file(self, tmp_path: Path):
+        assert self._settings(tmp_path).get('lock_file') == str(tmp_path / 'runtime' / '.lock')
+
+    def test_get_askpass_file(self, tmp_path: Path):
+        assert self._settings(tmp_path).get('askpass_file') == str(tmp_path / 'askpass' / 'askpass')
+
     def test_all_directives_accessible(self, tmp_path: Path):
         s = self._settings(tmp_path)
         for d in Settings.DIRECTIVES:
             s.get(d)  # should not raise
+
+
+class TestKeyFile:
+    def test_basic_fingerprint(self, tmp_path: Path):
+        s = Settings(
+            runtime_dir=tmp_path, askpass_dir=tmp_path,
+            ttl=3600, op_timeout=120, config_file=None,
+        )
+        assert s.key_file('SHA256:abc123') == tmp_path / 'keys' / 'SHA256:abc123.pub'
+
+    def test_fingerprint_with_slashes(self, tmp_path: Path):
+        s = Settings(
+            runtime_dir=tmp_path, askpass_dir=tmp_path,
+            ttl=3600, op_timeout=120, config_file=None,
+        )
+        fp = 'SHA256:HTjIA6pyekTD2wxmf0qyUZla8nAz/tpEcF0v3/nsa/.w'
+        expected = tmp_path / 'keys' / 'SHA256:HTjIA6pyekTD2wxmf0qyUZla8nAz_tpEcF0v3_nsa_.w.pub'
+        assert s.key_file(fp) == expected
