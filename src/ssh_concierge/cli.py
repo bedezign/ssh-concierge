@@ -33,17 +33,30 @@ def _write_env_sh(settings: Settings) -> None:
 
     Keeps the hot path Python-free: the shell script reads these values
     instead of invoking ``ssh-concierge-py --config`` on every connection.
+
+    When a config file exists, also writes env.sh next to it so the shell
+    entry point can find it even when runtime_dir is customized.
     """
-    env_path = settings.runtime_dir / 'env.sh'
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    env_path.write_text(
+    content = (
         f"CONFIG='{settings.hosts_file}'\n"
         f"TTL='{settings.ttl}'\n"
     )
 
+    # Always write to runtime dir
+    env_path = settings.runtime_dir / 'env.sh'
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(content)
+
+    # Also write next to config file if one exists (shell entry point looks here first)
+    if settings.config_file:
+        config_env = settings.config_file.parent / 'env.sh'
+        config_env.write_text(content)
+
 
 def _warn_noexec_askpass(askpass_dir: Path) -> None:
     """Warn if the askpass directory is on a noexec-mounted filesystem."""
+    if not hasattr(os, 'ST_NOEXEC'):
+        return  # os.ST_NOEXEC is Linux-only; skip on macOS/other platforms
     try:
         # Check the directory itself, or its parent if it doesn't exist yet
         check_path = askpass_dir

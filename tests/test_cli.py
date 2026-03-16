@@ -815,12 +815,20 @@ class TestWarnNoexecAskpass:
     def test_warns_on_noexec(self, tmp_path: Path, capsys):
         # Mock statvfs to return ST_NOEXEC flag
         mock_result = MagicMock()
-        mock_result.f_flag = os.ST_NOEXEC
+        mock_result.f_flag = getattr(os, 'ST_NOEXEC', 8)
         with patch('ssh_concierge.cli.os.statvfs', return_value=mock_result):
-            _warn_noexec_askpass(tmp_path)
+            with patch.object(os, 'ST_NOEXEC', getattr(os, 'ST_NOEXEC', 8), create=True):
+                _warn_noexec_askpass(tmp_path)
         err = capsys.readouterr().err
         assert 'noexec' in err.lower()
         assert 'askpass' in err.lower()
+
+    def test_skips_when_no_st_noexec(self, tmp_path: Path, capsys, monkeypatch):
+        """On platforms without os.ST_NOEXEC (e.g. macOS), silently returns."""
+        monkeypatch.delattr(os, 'ST_NOEXEC', raising=False)
+        _warn_noexec_askpass(tmp_path)
+        err = capsys.readouterr().err
+        assert err == ''
 
     def test_walks_up_to_existing_parent(self, tmp_path: Path, capsys):
         # Non-existent dir — should check parent
@@ -885,6 +893,47 @@ class TestWriteEnvSh:
         assert result.returncode == 0
         assert f'CONFIG={settings.hosts_file}' in result.stdout
         assert f'TTL={settings.ttl}' in result.stdout
+
+    def test_writes_env_to_config_dir(self, tmp_path):
+        """When a config file exists, env.sh is also written next to it."""
+        config_dir = tmp_path / 'config'
+        config_dir.mkdir()
+        config_file = config_dir / 'config.toml'
+        config_file.write_text('')
+        runtime_dir = tmp_path / 'runtime'
+
+        settings = Settings(
+            runtime_dir=runtime_dir,
+            askpass_dir=runtime_dir,
+            ttl=3600,
+            op_timeout=120,
+            config_file=config_file,
+        )
+        _write_env_sh(settings)
+
+        # Both locations have env.sh
+        assert (runtime_dir / 'env.sh').exists()
+        config_env = config_dir / 'env.sh'
+        assert config_env.exists()
+        # Same content
+        assert (runtime_dir / 'env.sh').read_text() == config_env.read_text()
+
+    def test_no_config_dir_env_when_no_config_file(self, tmp_path):
+        """When config_file is None, env.sh only appears in runtime_dir."""
+        runtime_dir = tmp_path / 'runtime'
+        settings = Settings(
+            runtime_dir=runtime_dir,
+            askpass_dir=runtime_dir,
+            ttl=3600,
+            op_timeout=120,
+            config_file=None,
+        )
+        _write_env_sh(settings)
+
+        assert (runtime_dir / 'env.sh').exists()
+        # No env.sh written elsewhere (check tmp_path children)
+        all_env_files = list(tmp_path.rglob('env.sh'))
+        assert len(all_env_files) == 1
 
 
 class TestGetAgentFingerprints:

@@ -17,10 +17,24 @@ case "$1" in
 esac
 
 # Read cached settings from env.sh (written by --generate, avoids Python on hot path)
-if [ -n "$XDG_RUNTIME_DIR" ]; then
-    _ENV="$XDG_RUNTIME_DIR/ssh-concierge/env.sh"
-else
-    _ENV="${TMPDIR:-/tmp}/ssh-concierge-$(id -u)/env.sh"
+# Check config directories first (handles custom runtime_dir)
+_ENV=""
+for _dir in \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/ssh-concierge" \
+    "$HOME/.ssh-concierge"; do
+    if [ -f "$_dir/env.sh" ]; then
+        _ENV="$_dir/env.sh"
+        break
+    fi
+done
+
+# Fall back to default runtime dir
+if [ -z "$_ENV" ]; then
+    if [ -n "$XDG_RUNTIME_DIR" ]; then
+        _ENV="$XDG_RUNTIME_DIR/ssh-concierge/env.sh"
+    else
+        _ENV="${TMPDIR:-/tmp}/ssh-concierge-$(id -u)/env.sh"
+    fi
 fi
 
 if [ -f "$_ENV" ]; then

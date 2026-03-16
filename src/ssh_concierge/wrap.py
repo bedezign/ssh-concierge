@@ -95,8 +95,9 @@ def resolve_clipboard(template: str, resolved: dict[str, str]) -> str:
 
 def copy_to_clipboard(value: str) -> bool:
     """Copy value to system clipboard. Returns True on success."""
-    wayland = os.environ.get('WAYLAND_DISPLAY')
-    if wayland:
+    if sys.platform == 'darwin':
+        cmd = ['pbcopy']
+    elif os.environ.get('WAYLAND_DISPLAY'):
         cmd = ['wl-copy']
     elif os.environ.get('DISPLAY'):
         cmd = ['xclip', '-selection', 'clipboard']

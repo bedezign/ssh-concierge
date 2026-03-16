@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ssh_concierge.settings import Settings, _find_config_file, load_settings
+from ssh_concierge.settings import Settings, _default_runtime_dir, _find_config_file, load_settings
 
 
 class TestFindConfigFile:
@@ -90,7 +90,7 @@ class TestLoadSettings:
         with patch('ssh_concierge.settings._find_config_file', return_value=config_file):
             settings = load_settings()
 
-        assert settings.runtime_dir == Path('/custom/runtime')
+        assert settings.runtime_dir == Path('/custom/runtime').resolve()
         assert settings.askpass_dir == Path('/custom/askpass')
         assert settings.ttl == 7200
         assert settings.op_timeout == 60
@@ -103,7 +103,7 @@ class TestLoadSettings:
         with patch('ssh_concierge.settings._find_config_file', return_value=config_file):
             settings = load_settings()
 
-        assert settings.askpass_dir == Path('/custom/runtime')
+        assert settings.askpass_dir == Path('/custom/runtime').resolve()
 
     def test_unknown_directives_warned(self, tmp_path: Path, capsys):
         config_file = tmp_path / 'config.toml'
@@ -133,7 +133,8 @@ class TestLoadSettings:
                 with patch('os.getuid', return_value=1000):
                     settings = load_settings()
 
-        assert settings.runtime_dir == Path('/tmp/ssh-concierge-1000')
+        # Path is resolved, so compare resolved form
+        assert settings.runtime_dir == Path('/tmp/ssh-concierge-1000').resolve()
 
     def test_askpass_defaults_when_no_section(self, tmp_path: Path):
         with patch('ssh_concierge.settings._find_config_file', return_value=None):
@@ -182,6 +183,20 @@ class TestLoadSettings:
 
         err = capsys.readouterr().err
         assert 'unknown' not in err.lower()
+
+
+class TestDefaultRuntimeDir:
+    def test_returns_resolved_path(self):
+        """Ensure _default_runtime_dir() returns a resolved path (no symlink components)."""
+        with patch.dict(os.environ, {}, clear=True):
+            with patch('os.getuid', return_value=1000):
+                result = _default_runtime_dir()
+        assert result == result.resolve()
+
+    def test_xdg_runtime_dir_used_when_set(self, tmp_path: Path):
+        with patch.dict(os.environ, {'XDG_RUNTIME_DIR': str(tmp_path)}):
+            result = _default_runtime_dir()
+        assert result == tmp_path / 'ssh-concierge'
 
 
 class TestSettingsGet:

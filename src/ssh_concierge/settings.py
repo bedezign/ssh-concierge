@@ -32,11 +32,16 @@ def _find_config_file() -> Path | None:
 
 
 def _default_runtime_dir() -> Path:
-    """Return the default runtime directory (XDG_RUNTIME_DIR or /tmp fallback)."""
+    """Return the default runtime directory (XDG_RUNTIME_DIR or /tmp fallback).
+
+    The fallback path is resolved to a physical path so that symlinks
+    (e.g. macOS /tmp → /private/tmp) don't cause mismatches between
+    the generated Include path and the actual file location.
+    """
     xdg = os.environ.get('XDG_RUNTIME_DIR')
     if xdg:
         return Path(xdg) / 'ssh-concierge'
-    return Path(tempfile.gettempdir()) / f'ssh-concierge-{os.getuid()}'
+    return (Path(tempfile.gettempdir()) / f'ssh-concierge-{os.getuid()}').resolve()
 
 
 @dataclass(frozen=True)
@@ -137,7 +142,7 @@ def load_settings() -> Settings:
             file=sys.stderr,
         )
 
-    runtime_dir = Path(raw['runtime_dir']) if 'runtime_dir' in raw else _default_runtime_dir()
+    runtime_dir = Path(raw['runtime_dir']).resolve() if 'runtime_dir' in raw else _default_runtime_dir()
     askpass_dir = Path(raw['askpass_dir']) if 'askpass_dir' in raw else runtime_dir
     ttl = int(raw.get('ttl', _DEFAULTS['ttl']))
     op_timeout = int(raw.get('op_timeout', _DEFAULTS['op_timeout']))

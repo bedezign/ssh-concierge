@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -274,9 +275,23 @@ class TestCopyToClipboard:
         cmd = mock_run.call_args[0][0]
         assert cmd == ['xclip', '-selection', 'clipboard']
 
+    @patch('ssh_concierge.wrap.subprocess.run')
+    def test_macos(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        with patch('ssh_concierge.wrap.sys') as mock_sys:
+            mock_sys.platform = 'darwin'
+            mock_sys.stderr = sys.stderr
+            with patch.dict(os.environ, {}, clear=True):
+                assert copy_to_clipboard('test') is True
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ['pbcopy']
+
     def test_no_display(self, capsys):
-        with patch.dict(os.environ, {}, clear=True):
-            assert copy_to_clipboard('test') is False
+        with patch('ssh_concierge.wrap.sys') as mock_sys:
+            mock_sys.platform = 'linux'
+            mock_sys.stderr = sys.stderr
+            with patch.dict(os.environ, {}, clear=True):
+                assert copy_to_clipboard('test') is False
         err = capsys.readouterr().err
         assert 'no clipboard tool' in err.lower()
 

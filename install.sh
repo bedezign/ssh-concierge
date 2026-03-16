@@ -192,7 +192,13 @@ fi
 # --- Check clipboard tool (optional, for clipboard feature) ---
 
 check_clipboard() {
-    if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    if [[ "$OS" == "macos" ]]; then
+        if command -v pbcopy &>/dev/null; then
+            ok "Clipboard: pbcopy (macOS)"
+        else
+            warn "pbcopy not found — clipboard feature won't work."
+        fi
+    elif [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
         if command -v wl-copy &>/dev/null; then
             ok "Clipboard: wl-copy (Wayland)"
         else
@@ -370,11 +376,15 @@ check_shadow "scp"
 
 heading "SSH config"
 
-# Determine runtime dir for the config snippet
-if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
-    runtime_example="$XDG_RUNTIME_DIR/ssh-concierge"
-else
-    runtime_example="/tmp/ssh-concierge-$(id -u)"
+# Query actual runtime dir from the installed tool (matches generation path)
+runtime_example=$("$PREFIX/ssh-concierge-py" --config runtime_dir 2>/dev/null)
+if [[ -z "$runtime_example" ]]; then
+    # Fallback if Python fails
+    if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+        runtime_example="$XDG_RUNTIME_DIR/ssh-concierge"
+    else
+        runtime_example="${TMPDIR:-/tmp}/ssh-concierge-$(id -u)"
+    fi
 fi
 
 SSH_CONFIG="$HOME/.ssh/config"
