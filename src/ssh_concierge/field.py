@@ -19,6 +19,11 @@ TEMPLATE_CLOSE = '}}'
 
 SENSITIVE_FIELD_NAMES = frozenset({'password', 'passwd', 'pass', 'secret', 'token', 'otp'})
 
+# Field names whose item-level refs (op://Vault/Item) auto-complete with a field path.
+_AUTO_COMPLETE_FIELDS: dict[str, str] = {
+    'password': 'password',
+}
+
 
 def _is_reference(value: str) -> bool:
     """Check if a value segment is a reference (contains ://)."""
@@ -48,6 +53,46 @@ def is_sensitive(raw: str, field_name: str) -> bool:
     """
     name = field_name.lower()
     return any(s in name for s in SENSITIVE_FIELD_NAMES) or OPS_PREFIX in raw
+
+
+def complete_field_refs(raw: str, field_name: str) -> str:
+    """Ensure all reference segments in a raw value have a field path.
+
+    Item-level refs (op://Vault/Item) are valid for ``key`` but not for fields
+    resolved via ``op read``.  For known fields (e.g. password) the field path
+    is auto-appended; for anything else a ValueError is raised.
+
+    Non-reference segments and complete references are passed through unchanged.
+    """
+    segments = raw.split(CHAIN_SEPARATOR)
+    result: list[str] = []
+    for segment in segments:
+        stripped = segment.strip()
+        if not stripped or not _is_reference(stripped):
+            result.append(segment)
+            continue
+
+        ref = OpRef.parse(stripped)
+        if ref.is_complete:
+            result.append(segment)
+            continue
+
+        auto_field = _AUTO_COMPLETE_FIELDS.get(field_name)
+        if auto_field:
+            completed = ref.with_field(auto_field)
+            logger.warning(
+                'Incomplete reference "%s" in field "%s" — auto-completed to "%s"',
+                stripped,
+                field_name,
+                completed.for_storage(),
+            )
+            result.append(segment.replace(stripped, completed.for_storage()))
+        else:
+            raise ValueError(
+                f'incomplete reference (missing field path): {stripped}'
+            )
+
+    return CHAIN_SEPARATOR.join(result)
 
 
 def normalize_original(raw: str, vault_id: str, item_id: str) -> str:

@@ -18,7 +18,7 @@ from pathlib import Path
 from ssh_concierge.config import generate_runtime_config
 from ssh_concierge.deploy import cmd_deploy_key
 from ssh_concierge.expand import expand_host_config
-from ssh_concierge.field import FieldValue, normalize_original, resolve_chain
+from ssh_concierge.field import FieldValue, complete_field_refs, normalize_original, resolve_chain
 from ssh_concierge.models import HostConfig
 from ssh_concierge.onepassword import OnePassword, parse_item_to_host_configs
 from ssh_concierge.opref import SELF_MARKER, OpRef
@@ -168,6 +168,11 @@ def resolve_host_fields(
 
     def _resolve_field(name: str, fv: FieldValue) -> FieldValue:
         try:
+            # Auto-complete item-level refs (e.g. password → /password)
+            completed = complete_field_refs(fv.original, name)
+            if completed != fv.original:
+                fv = dataclasses.replace(fv, original=completed)
+
             # Normalize self-refs so the wrapper can resolve without item metadata
             normalized = normalize_original(fv.original, meta.vault_id, meta.item_id)
             if normalized != fv.original:

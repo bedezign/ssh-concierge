@@ -9,6 +9,7 @@ import pytest
 from ssh_concierge.field import (
     FieldValue,
     classify_type,
+    complete_field_refs,
     is_sensitive,
     normalize_original,
     resolve_chain,
@@ -88,6 +89,44 @@ class TestIsSensitive:
 
     def test_user_field_not_sensitive(self):
         assert is_sensitive('deploy', 'user') is False
+
+
+class TestCompleteFieldRefs:
+    def test_complete_ref_unchanged(self):
+        result = complete_field_refs('op://Vault/Item/password', 'password')
+        assert result == 'op://Vault/Item/password'
+
+    def test_literal_unchanged(self):
+        result = complete_field_refs('hunter2', 'password')
+        assert result == 'hunter2'
+
+    def test_password_auto_completed(self):
+        result = complete_field_refs('op://Vault/Item', 'password')
+        assert result == 'op://Vault/Item/password'
+
+    def test_password_auto_completed_ops(self):
+        result = complete_field_refs('ops://Vault/Item', 'password')
+        assert result == 'ops://Vault/Item/password'
+
+    def test_password_auto_completed_same_vault(self):
+        result = complete_field_refs('op://./Item', 'password')
+        assert result == 'op://./Item/password'
+
+    def test_password_auto_completed_in_chain(self):
+        result = complete_field_refs('op://Vault/Item||fallback', 'password')
+        assert result == 'op://Vault/Item/password||fallback'
+
+    def test_incomplete_ref_unknown_field_raises(self):
+        with pytest.raises(ValueError, match='incomplete reference'):
+            complete_field_refs('op://Vault/Item', 'hostname')
+
+    def test_incomplete_ref_in_chain_unknown_field_raises(self):
+        with pytest.raises(ValueError, match='incomplete reference'):
+            complete_field_refs('op://Vault/Item||10.0.0.1', 'hostname')
+
+    def test_non_reference_segments_passthrough(self):
+        result = complete_field_refs('10.0.0.1', 'hostname')
+        assert result == '10.0.0.1'
 
 
 class TestNormalizeOriginal:
