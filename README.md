@@ -7,9 +7,10 @@ Stop maintaining `~/.ssh/config` by hand. ssh-concierge reads host configuration
 ## Why
 
 - **Single source of truth** — SSH key + host config live together in 1Password
+- **Safe** — private keys stay in the 1Password SSH agent (only public keys hit disk). Sensitive values are resolved at connection time via environment variables, never written to disk
 - **Zero-touch connections** — passwords and OTP codes injected automatically via `SSH_ASKPASS`, no prompts
+- **Reliable** — never blocks SSH, never modifies `~/.ssh/config`, always exits 0
 - **Fast** — sub-millisecond on the hot path (99% of connections hit a simple file-age check, no Python)
-- **Safe** — never blocks SSH, never modifies `~/.ssh/config`, always exits 0. Sensitive values (passwords, OTPs) are resolved at connection time and passed via environment variables — never written to disk
 - **Gradual adoption** — coexists with your existing static SSH config files
 
 ## vs 1Password SSH Bookmarks

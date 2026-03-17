@@ -104,7 +104,7 @@ Add a section named **SSH Config** with these fields:
 | Any SSH directive | No | Added verbatim. E.g., `ProxyJump`, `ForwardAgent`, `LocalForward`. |
 | Any other name | No | Stored as a custom field. See [Custom fields](#custom-fields). |
 
-The item's public key is automatically dumped and referenced via `IdentityFile`.
+The item's public key is exported and referenced via `IdentityFile`. Private keys never leave 1Password — SSH uses the 1Password SSH agent (`IdentityAgent`) for signing. Only the public key is written to disk so SSH knows which agent key to request.
 
 ### Multiple host groups per key
 
