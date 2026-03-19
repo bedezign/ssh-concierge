@@ -52,6 +52,7 @@ def generate_runtime_config(
     hostdata_file: Path,
     key_file: Callable[[str], Path],
     hostdata: dict[str, dict] | None = None,
+    key_mode: int = 0o600,
 ) -> None:
     """Generate the complete runtime config: SSH config + key files + host data cache.
 
@@ -66,7 +67,7 @@ def generate_runtime_config(
         if host.public_key and host.fingerprint:
             kf = key_file(host.fingerprint)
             _atomic_write(kf, host.public_key + "\n")
-            kf.chmod(0o644)
+            kf.chmod(key_mode)
 
     # Generate SSH config
     blocks = [HEADER]

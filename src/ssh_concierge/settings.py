@@ -57,6 +57,7 @@ class Settings:
     ttl: int
     op_timeout: int
     config_file: Path | None  # Path to the config file that was loaded (None = defaults)
+    key_mode: int = 0o600
     askpass_password: tuple[str, ...] = ('*assword*',)
     askpass_otp: tuple[str, ...] = ()
 
@@ -113,6 +114,8 @@ class Settings:
                 return str(self.askpass_file)
             case 'config_file':
                 return str(self.config_file) if self.config_file else ''
+            case 'key_mode':
+                return format(self.key_mode, '#o')
             case 'askpass_password':
                 return ', '.join(self.askpass_password)
             case 'askpass_otp':
@@ -132,13 +135,14 @@ class Settings:
         'askpass_file',
         'ttl',
         'op_timeout',
+        'key_mode',
         'askpass_password',
         'askpass_otp',
     )
 
 
 # Directives that users can set in the config file
-_CONFIGURABLE = {'runtime_dir', 'askpass_dir', 'ttl', 'op_timeout', 'askpass'}
+_CONFIGURABLE = {'runtime_dir', 'askpass_dir', 'ttl', 'op_timeout', 'key_mode', 'askpass'}
 
 _DEFAULTS = {
     'ttl': 3600,
@@ -175,6 +179,7 @@ def load_settings() -> Settings:
     askpass_dir = Path(raw['askpass_dir']) if 'askpass_dir' in raw else runtime_dir
     ttl = int(raw.get('ttl', _DEFAULTS['ttl']))
     op_timeout = int(raw.get('op_timeout', _DEFAULTS['op_timeout']))
+    key_mode = int(raw.get('key_mode', 0o600))
 
     askpass_section = raw.get('askpass', {})
     askpass_password = tuple(askpass_section.get('password', ['*assword*']))
@@ -186,6 +191,7 @@ def load_settings() -> Settings:
         ttl=ttl,
         op_timeout=op_timeout,
         config_file=config_file,
+        key_mode=key_mode,
         askpass_password=askpass_password,
         askpass_otp=askpass_otp,
     )

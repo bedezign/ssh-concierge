@@ -21,7 +21,7 @@ def _key_file(keys_dir: Path):
     return _inner
 
 
-def _gen(hosts, tmp_path, *, hostdata=None):
+def _gen(hosts, tmp_path, *, hostdata=None, key_mode=0o600):
     """Shorthand for generate_runtime_config with paths derived from tmp_path."""
     generate_runtime_config(
         hosts,
@@ -31,6 +31,7 @@ def _gen(hosts, tmp_path, *, hostdata=None):
         hostdata_file=tmp_path / 'hostdata.json',
         key_file=_key_file(tmp_path / 'keys'),
         hostdata=hostdata,
+        key_mode=key_mode,
     )
 
 
@@ -163,7 +164,7 @@ class TestGenerateRuntimeConfig:
         assert key_file.exists()
         assert key_file.read_text() == "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample comment\n"
 
-    def test_key_file_permissions(self, tmp_path: Path):
+    def test_key_file_permissions_default(self, tmp_path: Path):
         hosts = [
             HostConfig(
                 aliases=["keyed"],
@@ -173,6 +174,21 @@ class TestGenerateRuntimeConfig:
             ),
         ]
         _gen(hosts, tmp_path)
+
+        key_file = tmp_path / "keys" / "SHA256:abc.pub"
+        mode = key_file.stat().st_mode
+        assert stat.S_IMODE(mode) == 0o600
+
+    def test_key_file_permissions_custom(self, tmp_path: Path):
+        hosts = [
+            HostConfig(
+                aliases=["keyed"],
+                hostname=fv("10.0.0.1", "hostname"),
+                public_key="ssh-ed25519 AAAA... comment",
+                fingerprint="SHA256:abc",
+            ),
+        ]
+        _gen(hosts, tmp_path, key_mode=0o644)
 
         key_file = tmp_path / "keys" / "SHA256:abc.pub"
         mode = key_file.stat().st_mode

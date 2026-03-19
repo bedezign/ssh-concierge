@@ -76,6 +76,7 @@ class TestLoadSettings:
         assert settings.askpass_dir == settings.runtime_dir
         assert settings.ttl == 3600
         assert settings.op_timeout == 120
+        assert settings.key_mode == 0o600
         assert settings.config_file is None
 
     def test_overrides_from_config(self, tmp_path: Path):
@@ -143,6 +144,16 @@ class TestLoadSettings:
 
         assert settings.askpass_password == ('*assword*',)
         assert settings.askpass_otp == ()
+        assert settings.key_mode == 0o600
+
+    def test_key_mode_from_config(self, tmp_path: Path):
+        config_file = tmp_path / 'config.toml'
+        config_file.write_text('key_mode = 0o644\n')
+
+        with patch('ssh_concierge.settings._find_config_file', return_value=config_file):
+            settings = load_settings()
+
+        assert settings.key_mode == 0o644
 
     def test_askpass_from_config(self, tmp_path: Path):
         config_file = tmp_path / 'config.toml'
@@ -227,6 +238,17 @@ class TestSettingsGet:
             ttl=3600, op_timeout=120, config_file=None,
         )
         assert s.get('config_file') == ''
+
+    def test_get_key_mode(self, tmp_path: Path):
+        assert self._settings(tmp_path).get('key_mode') == '0o600'
+
+    def test_get_key_mode_custom(self, tmp_path: Path):
+        s = Settings(
+            runtime_dir=tmp_path, askpass_dir=tmp_path,
+            ttl=3600, op_timeout=120, config_file=None,
+            key_mode=0o644,
+        )
+        assert s.get('key_mode') == '0o644'
 
     def test_get_askpass_password(self, tmp_path: Path):
         assert self._settings(tmp_path).get('askpass_password') == '*assword*'

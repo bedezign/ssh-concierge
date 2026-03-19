@@ -482,6 +482,7 @@ def cmd_generate(
             hostdata_file=settings.hostdata_file,
             key_file=settings.key_file,
             hostdata=hostdata or None,
+            key_mode=settings.key_mode,
         )
         _write_env_sh(settings)
 
