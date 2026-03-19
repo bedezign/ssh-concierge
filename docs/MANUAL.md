@@ -588,6 +588,7 @@ ssh-concierge works without any configuration file — all settings have sensibl
 | `askpass_dir` | Same as `runtime_dir` | Where the askpass script is stored |
 | `ttl` | `3600` | Cache TTL in seconds |
 | `op_timeout` | `120` | 1Password CLI timeout in seconds |
+| `key_mode` | `0o600` | File permissions for exported public keys |
 | `[askpass]` | *(section)* | Prompt matching patterns for the askpass script |
 | `askpass.password` | `["*assword*"]` | Shell glob patterns that trigger password injection |
 | `askpass.otp` | `[]` | Shell glob patterns for OTP prompts (falls through to tty unless `__SSH_CONCIERGE_OTP` is set) |
@@ -614,7 +615,7 @@ ssh-concierge --config hosts_file   # Single value
 ssh-concierge --config ttl          # "3600"
 ```
 
-Available directives: `config_file`, `runtime_dir`, `askpass_dir`, `hosts_file`, `hostdata_file`, `keys_dir`, `ttl`, `op_timeout`, `askpass_password`, `askpass_otp`.
+Available directives: `config_file`, `runtime_dir`, `askpass_dir`, `hosts_file`, `hostdata_file`, `keys_dir`, `ttl`, `op_timeout`, `key_mode`, `askpass_password`, `askpass_otp`.
 
 The shell entry point uses `--config` internally to get paths and TTL from Python, keeping a single source of truth.
 
@@ -634,7 +635,7 @@ $XDG_RUNTIME_DIR/ssh-concierge/
 
 - `hosts.conf` is written atomically (temp file + rename) — no partial reads.
 - `hostdata.json` stores field data: original references, cached resolved values (for non-sensitive fields), and clipboard templates. Sensitive fields are never stored resolved.
-- Public keys get `0644` permissions.
+- Public keys get `0600` permissions (configurable via `key_mode`). SSH checks permissions on `IdentityFile` paths regardless of whether they are public or private keys.
 - The `.lock` file uses `fcntl.flock` so parallel SSH connections don't corrupt the config.
 
 ## Cache behavior
