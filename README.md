@@ -9,7 +9,7 @@ Stop maintaining `~/.ssh/config` by hand. ssh-concierge reads host configuration
 - **Single source of truth** — SSH key + host config live together in 1Password
 - **Safe** — private keys stay in the 1Password SSH agent (only public keys hit disk). Sensitive values are resolved at connection time via environment variables, never written to disk
 - **Zero-touch connections** — passwords and OTP codes injected automatically via `SSH_ASKPASS`, no prompts
-- **Reliable** — never blocks SSH, never modifies `~/.ssh/config`, always exits 0
+- **Reliable** — never blocks SSH, never modifies `~/.ssh/config`, always exits 0. Unrecognized prompts pass through to the terminal unchanged
 - **Fast** — sub-millisecond on the hot path (99% of connections hit a simple file-age check, no Python)
 - **Gradual adoption** — coexists with your existing static SSH config files
 
@@ -82,7 +82,7 @@ Any 1Password item — Server, Login, Secure Note — can manage a host. Tag it 
 
 - **Multiple hosts per key** — add multiple `SSH Config: <name>` sections to one item
 - **Any item type as host** — tag non-key items `SSH Host` for password-auth or agent-based hosts
-- **Transparent password auth** — `op://` reference in `password` field, SSH/SCP connects without prompts. Optional `otp` field for TOTP two-factor auth
+- **Transparent password auth** — `op://` reference in `password` field, SSH/SCP connects without prompts. Optional `otp` field for TOTP two-factor auth. Per-host prompt patterns (`password_prompt`, `otp_prompt`) for non-standard auth dialogs; unrecognized prompts pass through to the terminal
 - **Clipboard injection** — auto-copy commands/passwords to clipboard on connect (e.g., `sudo -i\n{password}`)
 - **`op://` references in any field** — hostname, user, or any directive can reference 1Password values
 - **`||` fallback chains** — `op://././hostname||10.0.0.1` — try the reference, fall back to a literal
