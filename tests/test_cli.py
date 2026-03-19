@@ -13,7 +13,7 @@ from ssh_concierge.cli import (
     cmd_generate, cmd_flush, cmd_status, cmd_list, cmd_debug, main,
     _build_key_registry, _resolve_key_ref,
     _load_cached_hostdata, _warn_noexec_askpass, _warn_missing_agent_keys,
-    _get_agent_fingerprints, _agent_key_status, _write_env_sh,
+    _get_agent_fingerprints, AgentQueryError, _agent_key_status, _write_env_sh,
     resolve_host_fields,
 )
 from ssh_concierge.deploy import cmd_deploy_key
@@ -980,15 +980,17 @@ class TestWriteEnvSh:
 class TestGetAgentFingerprints:
     """Tests for _get_agent_fingerprints."""
 
-    def test_no_socket_returns_none(self):
-        """Returns None when SSH_AUTH_SOCK is not set."""
+    def test_no_socket_raises(self):
+        """Raises AgentQueryError when SSH_AUTH_SOCK is not set."""
         with patch.dict(os.environ, {}, clear=True):
-            assert _get_agent_fingerprints() is None
+            with pytest.raises(AgentQueryError, match='SSH_AUTH_SOCK not set'):
+                _get_agent_fingerprints()
 
-    def test_empty_socket_returns_none(self):
-        """Returns None when SSH_AUTH_SOCK is empty."""
+    def test_empty_socket_raises(self):
+        """Raises AgentQueryError when SSH_AUTH_SOCK is empty."""
         with patch.dict(os.environ, {'SSH_AUTH_SOCK': ''}):
-            assert _get_agent_fingerprints() is None
+            with pytest.raises(AgentQueryError, match='SSH_AUTH_SOCK not set'):
+                _get_agent_fingerprints()
 
     def test_parses_fingerprints(self):
         """Extracts fingerprints from ssh-add -l output."""
@@ -1002,37 +1004,42 @@ class TestGetAgentFingerprints:
                 result = _get_agent_fingerprints()
         assert result == {'SHA256:abc123def456', 'SHA256:xyz789ghi012'}
 
-    def test_ssh_add_failure_returns_none(self):
-        """Returns None when ssh-add exits non-zero."""
-        mock_result = MagicMock(returncode=1, stdout='The agent has no identities.\n')
+    def test_ssh_add_failure_raises(self):
+        """Raises AgentQueryError when ssh-add exits non-zero."""
+        mock_result = MagicMock(returncode=1, stdout='', stderr='The agent has no identities.\n')
         with patch.dict(os.environ, {'SSH_AUTH_SOCK': '/tmp/agent.sock'}):
             with patch('ssh_concierge.cli.subprocess.run', return_value=mock_result):
-                assert _get_agent_fingerprints() is None
+                with pytest.raises(AgentQueryError, match='ssh-add exited 1'):
+                    _get_agent_fingerprints()
 
-    def test_ssh_add_not_found_returns_none(self):
-        """Returns None when ssh-add binary is not found."""
+    def test_ssh_add_not_found_raises(self):
+        """Raises AgentQueryError when ssh-add binary is not found."""
         with patch.dict(os.environ, {'SSH_AUTH_SOCK': '/tmp/agent.sock'}):
             with patch('ssh_concierge.cli.subprocess.run', side_effect=FileNotFoundError):
-                assert _get_agent_fingerprints() is None
+                with pytest.raises(AgentQueryError, match='ssh-add not found'):
+                    _get_agent_fingerprints()
 
-    def test_timeout_returns_none(self):
-        """Returns None when ssh-add times out."""
+    def test_timeout_raises(self):
+        """Raises AgentQueryError when ssh-add times out."""
         import subprocess as sp
 
         with patch.dict(os.environ, {'SSH_AUTH_SOCK': '/tmp/agent.sock'}):
             with patch('ssh_concierge.cli.subprocess.run', side_effect=sp.TimeoutExpired('ssh-add', 5)):
-                assert _get_agent_fingerprints() is None
+                with pytest.raises(AgentQueryError, match='ssh-add timed out'):
+                    _get_agent_fingerprints()
 
 
 class TestWarnMissingAgentKeys:
     """Tests for _warn_missing_agent_keys."""
 
-    def test_no_agent_skips_silently(self, capsys):
-        """No warning when agent is unavailable."""
+    def test_no_agent_warns(self, capsys):
+        """Warning when agent is unavailable."""
         hosts = [HostConfig(aliases=['server1'], fingerprint='SHA256:abc')]
-        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value=None):
+        with patch('ssh_concierge.cli._get_agent_fingerprints', side_effect=AgentQueryError('SSH_AUTH_SOCK not set')):
             _warn_missing_agent_keys(hosts, {})
-        assert capsys.readouterr().err == ''
+        err = capsys.readouterr().err
+        assert 'Cannot check SSH agent keys' in err
+        assert 'SSH_AUTH_SOCK not set' in err
 
     def test_all_keys_present_no_warning(self, capsys):
         """No warning when all keys are in the agent."""
@@ -1108,15 +1115,14 @@ class TestDebugAgentCheck:
         out = capsys.readouterr().out
         assert '⚠ NOT in SSH agent' in out
 
-    def test_no_agent_no_status(self, capsys, runtime_dir, settings):
-        """No agent status shown when agent is unavailable."""
+    def test_no_agent_shows_warning(self, capsys, runtime_dir, settings):
+        """Agent query error shown inline when agent is unavailable."""
         fp = 'SHA256:abc123'
         self._setup_config(runtime_dir, 'server1', fp)
-        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value=None):
+        with patch('ssh_concierge.cli._get_agent_fingerprints', side_effect=AgentQueryError('SSH_AUTH_SOCK not set')):
             cmd_debug('server1', settings)
         out = capsys.readouterr().out
-        assert '✓' not in out
-        assert '⚠ NOT in SSH agent' not in out
+        assert '⚠ cannot check agent' in out
         assert '# Key: op://Work/TestKey' in out
 
 
@@ -1138,8 +1144,8 @@ class TestAgentKeyStatus:
             result = _agent_key_status('    IdentityFile /run/keys/SHA256:abc_def_ghi.pub')
         assert '✓' in result
 
-    def test_agent_unavailable_returns_empty(self):
-        """Returns empty string when the agent cannot be queried."""
-        with patch('ssh_concierge.cli._get_agent_fingerprints', return_value=None):
+    def test_agent_unavailable_shows_warning(self):
+        """Returns warning when the agent cannot be queried."""
+        with patch('ssh_concierge.cli._get_agent_fingerprints', side_effect=AgentQueryError('SSH_AUTH_SOCK not set')):
             result = _agent_key_status('    IdentityFile /run/keys/SHA256:abc.pub')
-        assert result == ''
+        assert '⚠ cannot check agent' in result

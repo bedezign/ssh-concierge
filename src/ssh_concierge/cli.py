@@ -72,14 +72,18 @@ def _warn_noexec_askpass(askpass_dir: Path) -> None:
         pass  # Can't check — don't block generation
 
 
-def _get_agent_fingerprints() -> set[str] | None:
+class AgentQueryError(Exception):
+    """Raised when the SSH agent cannot be queried for fingerprints."""
+
+
+def _get_agent_fingerprints() -> set[str]:
     """Query the SSH agent for available key fingerprints.
 
-    Returns a set of fingerprint strings (e.g. 'SHA256:abc...'), or None
-    if the agent is unavailable or cannot be queried.
+    Returns a set of fingerprint strings (e.g. 'SHA256:abc...').
+    Raises AgentQueryError if the agent is unavailable or cannot be queried.
     """
     if not os.environ.get('SSH_AUTH_SOCK'):
-        return None
+        raise AgentQueryError('SSH_AUTH_SOCK not set')
 
     try:
         result = subprocess.run(
@@ -88,11 +92,18 @@ def _get_agent_fingerprints() -> set[str] | None:
             text=True,
             timeout=5,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return None
+    except FileNotFoundError:
+        raise AgentQueryError('ssh-add not found')
+    except subprocess.TimeoutExpired:
+        raise AgentQueryError('ssh-add timed out')
+    except OSError as exc:
+        raise AgentQueryError(f'ssh-add failed: {exc}')
 
     if result.returncode != 0:
-        return None
+        stderr = result.stderr.strip()
+        raise AgentQueryError(
+            f'ssh-add exited {result.returncode}{": " + stderr if stderr else ""}'
+        )
 
     # Format: "bits fingerprint comment (type)"
     fingerprints = set()
@@ -108,9 +119,11 @@ def _warn_missing_agent_keys(
     hostdata: dict[str, dict],
 ) -> None:
     """Warn about exported keys that are not available in the SSH agent."""
-    agent_fps = _get_agent_fingerprints()
-    if agent_fps is None:
-        return  # Can't check — skip silently
+    try:
+        agent_fps = _get_agent_fingerprints()
+    except AgentQueryError as exc:
+        print(f'WARNING: Cannot check SSH agent keys: {exc}', file=sys.stderr)
+        return
 
     # Collect fingerprint → alias list for hosts with IdentityFile
     missing: dict[str, list[str]] = {}
@@ -549,9 +562,10 @@ def _agent_key_status(identity_line: str) -> str:
         return ''
 
     fp = Path(key_path).stem.replace('_', '/')
-    agent_fps = _get_agent_fingerprints()
-    if agent_fps is None:
-        return ''
+    try:
+        agent_fps = _get_agent_fingerprints()
+    except AgentQueryError as exc:
+        return f'  ⚠ cannot check agent: {exc}'
     if fp in agent_fps:
         return '  ✓ available in SSH agent'
     return '  ⚠ NOT in SSH agent (check 1Password agent vault config)'
