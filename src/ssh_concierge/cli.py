@@ -512,6 +512,8 @@ def cmd_generate(
             print(f"Config:    {settings.hosts_file}")
             if hostdata:
                 print(f"Hostdata:  {settings.hostdata_file}")
+            if settings.ttl == 0:
+                print("Note: Auto-update is disabled (ttl=0). Run --generate manually to refresh.")
 
         if password_count > 0:
             _warn_noexec_askpass(settings.askpass_dir)
@@ -541,8 +543,10 @@ def cmd_status(settings: Settings) -> None:
     host_count = len(re.findall(r"^Host ", content, re.MULTILINE))
 
     age_min = int(age_secs // 60)
-    stale = age_secs >= settings.ttl
-    status = "STALE" if stale else "fresh"
+    if settings.ttl == 0:
+        status = 'manual'
+    else:
+        status = 'STALE' if age_secs >= settings.ttl else 'fresh'
 
     print(f"Config: {conf}")
     print(f"Status: {status} (age: {age_min}m)")
@@ -659,8 +663,10 @@ def cmd_debug(alias: str, settings: Settings) -> None:
     # Config age
     age_secs = time.time() - conf.stat().st_mtime
     age_min = int(age_secs // 60)
-    stale = age_secs >= settings.ttl
-    status = 'STALE' if stale else 'fresh'
+    if settings.ttl == 0:
+        status = 'manual'
+    else:
+        status = 'STALE' if age_secs >= settings.ttl else 'fresh'
     print(f'\nConfig age: {age_min}m ({status})')
 
 

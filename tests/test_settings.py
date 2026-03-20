@@ -74,7 +74,7 @@ class TestLoadSettings:
 
         assert settings.runtime_dir == tmp_path / 'run' / 'ssh-concierge'
         assert settings.askpass_dir == settings.runtime_dir
-        assert settings.ttl == 3600
+        assert settings.ttl == 0
         assert settings.op_timeout == 120
         assert settings.key_mode == 0o600
         assert settings.config_file is None
@@ -124,7 +124,7 @@ class TestLoadSettings:
         with patch('ssh_concierge.settings._find_config_file', return_value=config_file):
             settings = load_settings()
 
-        assert settings.ttl == 3600  # defaults
+        assert settings.ttl == 0  # defaults
         err = capsys.readouterr().err
         assert 'error reading' in err.lower()
 

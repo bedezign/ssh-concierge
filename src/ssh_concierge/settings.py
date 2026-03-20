@@ -145,7 +145,7 @@ class Settings:
 _CONFIGURABLE = {'runtime_dir', 'askpass_dir', 'ttl', 'op_timeout', 'key_mode', 'askpass'}
 
 _DEFAULTS = {
-    'ttl': 3600,
+    'ttl': 0,
     'op_timeout': 120,
 }
 

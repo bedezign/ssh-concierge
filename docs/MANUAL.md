@@ -586,7 +586,7 @@ ssh-concierge works without any configuration file — all settings have sensibl
 |-----------|---------|-------------|
 | `runtime_dir` | `$XDG_RUNTIME_DIR/ssh-concierge` or `/tmp/ssh-concierge-$UID` | Where runtime files are generated |
 | `askpass_dir` | Same as `runtime_dir` | Where the askpass script is stored |
-| `ttl` | `3600` | Cache TTL in seconds |
+| `ttl` | `0` | Cache TTL in seconds. Default `0` disables auto-generation — only explicit `--generate` triggers regeneration. Set to e.g. `3600` for hourly auto-refresh |
 | `op_timeout` | `120` | 1Password CLI timeout in seconds |
 | `key_mode` | `0o600` | File permissions for exported public keys |
 | `[askpass]` | *(section)* | Prompt matching patterns for the askpass script |
@@ -612,7 +612,7 @@ Use `--config` to see the effective configuration (defaults + config file overri
 ```bash
 ssh-concierge --config              # All directives
 ssh-concierge --config hosts_file   # Single value
-ssh-concierge --config ttl          # "3600"
+ssh-concierge --config ttl          # "0"
 ```
 
 Available directives: `config_file`, `runtime_dir`, `askpass_dir`, `hosts_file`, `hostdata_file`, `keys_dir`, `ttl`, `op_timeout`, `key_mode`, `askpass_password`, `askpass_otp`.
@@ -640,9 +640,9 @@ $XDG_RUNTIME_DIR/ssh-concierge/
 
 ## Cache behavior
 
-- **TTL**: 1 hour. The shell entry point checks the mtime of `hosts.conf`.
+- **TTL**: 1 hour (default). The shell entry point checks the mtime of `hosts.conf`. Set `ttl = 0` in `config.toml` to disable auto-generation entirely — the shell entry point will skip regeneration as long as `hosts.conf` exists, and `--status`/`--debug` will show "manual" instead of "STALE".
 - **No background refresh**. The cache is populated on the first SSH connection after expiry.
-- **Manual refresh**: `ssh-concierge --generate` (after modifying items in 1Password).
+- **Manual refresh**: `ssh-concierge --generate` (after modifying items in 1Password). This always works regardless of TTL setting.
 - **Force re-resolution**: `ssh-concierge --generate --no-cache` (when the referenced *value* in 1Password changed but the reference itself didn't).
 - **Clear cache**: `ssh-concierge --flush` (next SSH connection triggers a cold path).
 
