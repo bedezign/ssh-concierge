@@ -1,11 +1,11 @@
+# pyright: reportOptionalMemberAccess=false, reportOptionalSubscript=false
 """Tests for expansion utilities: brace expansion + regex directives."""
 
-from tests.conftest import fv
+from op_core import expand_braces
 
-import pytest
-
-from ssh_concierge.expand import expand_braces, expand_host_config
+from ssh_concierge.expand import expand_host_config
 from ssh_concierge.models import HostConfig
+from tests.conftest import fv
 
 
 class TestExpandBraces:
@@ -16,7 +16,12 @@ class TestExpandBraces:
         assert expand_braces("host{1,2,3}") == ["host1", "host2", "host3"]
 
     def test_range(self):
-        assert expand_braces("worker{1..4}") == ["worker1", "worker2", "worker3", "worker4"]
+        assert expand_braces("worker{1..4}") == [
+            "worker1",
+            "worker2",
+            "worker3",
+            "worker4",
+        ]
 
     def test_prefix_and_suffix(self):
         assert expand_braces("prd{1,2}x") == ["prd1x", "prd2x"]
@@ -32,7 +37,11 @@ class TestExpandBraces:
         assert expand_braces("host{5..5}") == ["host5"]
 
     def test_comma_with_multi_char(self):
-        assert expand_braces("{master,worker,utility}1") == ["master1", "worker1", "utility1"]
+        assert expand_braces("{master,worker,utility}1") == [
+            "master1",
+            "worker1",
+            "utility1",
+        ]
 
     def test_no_expansion_literal_braces(self):
         # Braces without valid expansion syntax pass through
@@ -48,7 +57,9 @@ class TestExpandHostConfig:
     # --- no regex: pass through ---
 
     def test_no_regex_passthrough(self):
-        host = HostConfig(aliases=["prod", "prod-web"], hostname=fv("10.0.0.1", "hostname"))
+        host = HostConfig(
+            aliases=["prod", "prod-web"], hostname=fv("10.0.0.1", "hostname")
+        )
         result = expand_host_config(host)
         assert result == [host]
 
@@ -58,7 +69,9 @@ class TestExpandHostConfig:
         assert result == [host]
 
     def test_percent_h_not_regex(self):
-        host = HostConfig(aliases=["master1", "worker1"], hostname=fv("%h.example.com", "hostname"))
+        host = HostConfig(
+            aliases=["master1", "worker1"], hostname=fv("%h.example.com", "hostname")
+        )
         result = expand_host_config(host)
         assert result == [host]
 
@@ -76,15 +89,15 @@ class TestExpandHostConfig:
         assert len(result) == 3
 
         assert result[0].aliases == ["prdmaster1"]
-        assert result[0].hostname.raw == "master1.cluster1prd.example.com"
-        assert result[0].user.raw == "jdoe"
+        assert result[0].hostname.original == "master1.cluster1prd.example.com"
+        assert result[0].user.original == "jdoe"
         assert result[0].fingerprint == "SHA256:abc"
 
         assert result[1].aliases == ["prdmaster2"]
-        assert result[1].hostname.raw == "master2.cluster1prd.example.com"
+        assert result[1].hostname.original == "master2.cluster1prd.example.com"
 
         assert result[2].aliases == ["prdworker1"]
-        assert result[2].hostname.raw == "worker1.cluster1prd.example.com"
+        assert result[2].hostname.original == "worker1.cluster1prd.example.com"
 
     def test_regex_hostname_append_suffix(self):
         host = HostConfig(
@@ -92,8 +105,8 @@ class TestExpandHostConfig:
             hostname=fv(r"s/(.+)/\1.cluster1.example.com/", "hostname"),
         )
         result = expand_host_config(host)
-        assert result[0].hostname.raw == "master1.cluster1.example.com"
-        assert result[1].hostname.raw == "worker1.cluster1.example.com"
+        assert result[0].hostname.original == "master1.cluster1.example.com"
+        assert result[1].hostname.original == "worker1.cluster1.example.com"
 
     # --- regex user (PSMP pattern) ---
 
@@ -107,11 +120,17 @@ class TestExpandHostConfig:
         assert len(result) == 2
 
         assert result[0].aliases == ["paserver1"]
-        assert result[0].hostname.raw == "pam-gateway.example.com"
-        assert result[0].user.raw == "jdoe@pajdoe%corp.example.com@server1.example.com"
+        assert result[0].hostname.original == "pam-gateway.example.com"
+        assert (
+            result[0].user.original
+            == "jdoe@pajdoe%corp.example.com@server1.example.com"
+        )
 
         assert result[1].aliases == ["paserver2"]
-        assert result[1].user.raw == "jdoe@pajdoe%corp.example.com@server2.example.com"
+        assert (
+            result[1].user.original
+            == "jdoe@pajdoe%corp.example.com@server2.example.com"
+        )
 
     def test_regex_user_with_static_hostname(self):
         """Hostname stays fixed when only user has regex."""
@@ -121,10 +140,10 @@ class TestExpandHostConfig:
             user=fv(r"s/(.+)/admin@\1.internal/", "user"),
         )
         result = expand_host_config(host)
-        assert result[0].hostname.raw == "proxy.example.com"
-        assert result[1].hostname.raw == "proxy.example.com"
-        assert result[0].user.raw == "admin@a.internal"
-        assert result[1].user.raw == "admin@b.internal"
+        assert result[0].hostname.original == "proxy.example.com"
+        assert result[1].hostname.original == "proxy.example.com"
+        assert result[0].user.original == "admin@a.internal"
+        assert result[1].user.original == "admin@b.internal"
 
     # --- regex extra directives ---
 
@@ -139,9 +158,15 @@ class TestExpandHostConfig:
         )
         result = expand_host_config(host)
         assert len(result) == 2
-        assert result[0].extra_directives["LocalForward"].raw == "8080 server1.internal:80"
-        assert result[0].extra_directives["ProxyJump"].raw == "bastion"
-        assert result[1].extra_directives["LocalForward"].raw == "8080 server2.internal:80"
+        assert (
+            result[0].extra_directives["LocalForward"].original
+            == "8080 server1.internal:80"
+        )
+        assert result[0].extra_directives["ProxyJump"].original == "bastion"
+        assert (
+            result[1].extra_directives["LocalForward"].original
+            == "8080 server2.internal:80"
+        )
 
     # --- {{alias}} placeholder ---
 
@@ -154,9 +179,13 @@ class TestExpandHostConfig:
         result = expand_host_config(host)
         assert len(result) == 2
         assert result[0].aliases == ["node01"]
-        assert result[0].hostname.raw == "pam-gateway.example.com"
-        assert result[0].user.raw == "jdoe@pajdoe%corp.example.com@node01.example.com"
-        assert result[1].user.raw == "jdoe@pajdoe%corp.example.com@node02.example.com"
+        assert result[0].hostname.original == "pam-gateway.example.com"
+        assert (
+            result[0].user.original == "jdoe@pajdoe%corp.example.com@node01.example.com"
+        )
+        assert (
+            result[1].user.original == "jdoe@pajdoe%corp.example.com@node02.example.com"
+        )
 
     def test_alias_in_hostname(self):
         host = HostConfig(
@@ -164,21 +193,33 @@ class TestExpandHostConfig:
             hostname=fv("{{alias}}.cluster1.example.com", "hostname"),
         )
         result = expand_host_config(host)
-        assert result[0].hostname.raw == "master1.cluster1.example.com"
-        assert result[1].hostname.raw == "worker1.cluster1.example.com"
+        assert result[0].hostname.original == "master1.cluster1.example.com"
+        assert result[1].hostname.original == "worker1.cluster1.example.com"
 
     def test_alias_in_extra_directive(self):
         host = HostConfig(
             aliases=["web1", "web2"],
             hostname=fv("10.0.0.1", "hostname"),
-            extra_directives={"LocalForward": fv("8080 {{alias}}.internal:80", "LocalForward")},
+            extra_directives={
+                "LocalForward": fv("8080 {{alias}}.internal:80", "LocalForward")
+            },
         )
         result = expand_host_config(host)
-        assert result[0].extra_directives["LocalForward"].raw == "8080 web1.internal:80"
-        assert result[1].extra_directives["LocalForward"].raw == "8080 web2.internal:80"
+        assert (
+            result[0].extra_directives["LocalForward"].original
+            == "8080 web1.internal:80"
+        )
+        assert (
+            result[1].extra_directives["LocalForward"].original
+            == "8080 web2.internal:80"
+        )
 
     def test_alias_not_triggered_without_placeholder(self):
-        host = HostConfig(aliases=["a", "b"], hostname=fv("10.0.0.1", "hostname"), user=fv("admin", "user"))
+        host = HostConfig(
+            aliases=["a", "b"],
+            hostname=fv("10.0.0.1", "hostname"),
+            user=fv("admin", "user"),
+        )
         result = expand_host_config(host)
         assert result == [host]
 
@@ -204,9 +245,9 @@ class TestExpandHostConfig:
             extra_directives={"ProxyJump": fv("bastion", "ProxyJump")},
         )
         result = expand_host_config(host)
-        assert result[0].port.raw == "22"
-        assert result[0].user.raw == "admin"
-        assert result[0].extra_directives["ProxyJump"].raw == "bastion"
+        assert result[0].port.original == "22"
+        assert result[0].user.original == "admin"
+        assert result[0].extra_directives["ProxyJump"].original == "bastion"
 
     def test_password_preserved_through_expansion(self):
         host = HostConfig(
@@ -216,8 +257,8 @@ class TestExpandHostConfig:
         )
         result = expand_host_config(host)
         assert len(result) == 2
-        assert result[0].password.raw == "op://././password"
-        assert result[1].password.raw == "op://././password"
+        assert result[0].password.original == "op://././password"
+        assert result[1].password.original == "op://././password"
 
     def test_password_preserved_no_expansion(self):
         host = HostConfig(
@@ -227,7 +268,7 @@ class TestExpandHostConfig:
         )
         result = expand_host_config(host)
         assert result == [host]
-        assert result[0].password.raw == "literal-pw"
+        assert result[0].password.original == "literal-pw"
 
     def test_key_ref_preserved_through_expansion(self):
         host = HostConfig(

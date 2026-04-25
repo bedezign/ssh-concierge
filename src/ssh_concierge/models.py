@@ -6,7 +6,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ssh_concierge.field import FieldValue
+    from op_core import FieldValue
+
+
+def _config_value(fv: FieldValue | None) -> str | None:
+    """Value of a FieldValue for SSH config output. None if absent or sensitive."""
+    if fv is None or fv.sensitive:
+        return None
+    return fv.resolved
 
 
 @dataclass(frozen=True)
@@ -42,24 +49,26 @@ class HostConfig:
     @property
     def effective_hostname(self) -> str:
         """Hostname to use in config — resolved hostname or first alias."""
-        if self.hostname:
-            return self.hostname.for_config() or self.aliases[0]
-        return self.aliases[0]
+        return _config_value(self.hostname) or self.aliases[0]
 
     @property
     def config_port(self) -> str | None:
         """Port value for SSH config output (None if absent or sensitive)."""
-        return self.port.for_config() if self.port else None
+        return _config_value(self.port)
 
     @property
     def config_user(self) -> str | None:
         """User value for SSH config output (None if absent or sensitive)."""
-        return self.user.for_config() if self.user else None
+        return _config_value(self.user)
 
     @property
     def config_extra(self) -> dict[str, str]:
         """Extra directives for SSH config output (excludes sensitive fields)."""
-        return {k: val for k, fv in self.extra_directives.items() if (val := fv.for_config()) is not None}
+        return {
+            k: val
+            for k, fv in self.extra_directives.items()
+            if (val := _config_value(fv)) is not None
+        }
 
     def matches_host(self, hostname: str) -> bool:
         """Check if this config should be generated on the given hostname.
@@ -69,25 +78,22 @@ class HostConfig:
         Matching is case-insensitive. Filter entry 'alpha' matches both
         'alpha' and 'alpha.example.com'.
         """
-        if not self.host_filter or self.host_filter.strip() == '*':
+        if not self.host_filter or self.host_filter.strip() == "*":
             return True
 
         raw = self.host_filter.strip()
-        negate = raw.lower().startswith('not ')
+        negate = raw.lower().startswith("not ")
         if negate:
             raw = raw[4:]
 
-        entries = [e.strip().lower() for e in raw.split(',') if e.strip()]
+        entries = [e.strip().lower() for e in raw.split(",") if e.strip()]
         hostname_lower = hostname.lower()
-        short_hostname = hostname_lower.split('.', 1)[0]
+        short_hostname = hostname_lower.split(".", 1)[0]
 
-        matched = any(
-            e == hostname_lower or e == short_hostname
-            for e in entries
-        )
+        matched = any(e == hostname_lower or e == short_hostname for e in entries)
         return not matched if negate else matched
 
     @property
     def host_pattern(self) -> str:
         """Space-separated aliases for the Host line."""
-        return ' '.join(self.aliases)
+        return " ".join(self.aliases)

@@ -111,6 +111,8 @@ Any 1Password item — Server, Login, Secure Note — can manage a host. Tag it 
 - [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) installed and signed in
 - 1Password SSH agent (`~/.1password/agent.sock`)
 
+The 1Password layer is provided by [op-core](https://github.com/bedezign/op-core), a small standalone library that wraps `op`, models `op://` references and `||` fallback chains, and resolves them through pluggable backends. It's pinned by git tag in `pyproject.toml`; `uv` and `pip` fetch it automatically from GitHub during install — no manual setup needed.
+
 ## Install
 
 ```bash

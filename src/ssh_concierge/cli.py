@@ -15,45 +15,52 @@ import sys
 import time
 from pathlib import Path
 
+from op_core import (
+    CLIBackend,
+    FieldValue,
+    InMemoryBackend,
+    Item,
+    OnePassword,
+    OpRef,
+    normalize_original,
+)
+
 from ssh_concierge.config import generate_runtime_config
 from ssh_concierge.deploy import cmd_deploy_key
 from ssh_concierge.expand import expand_host_config
-from ssh_concierge.field import FieldValue, complete_field_refs, normalize_original, resolve_chain
 from ssh_concierge.models import HostConfig
-from ssh_concierge.onepassword import OnePassword, parse_item_to_host_configs
-from ssh_concierge.opref import SELF_MARKER, OpRef
 from ssh_concierge.password import ItemMeta
 from ssh_concierge.settings import Settings, load_settings
+from ssh_concierge.ssh_items import (
+    SSH_HOST_TAG,
+    complete_field_refs,
+    parse_item_to_host_configs,
+)
 from ssh_concierge.wrap import lookup_hostdata
 
 
 def _write_env_sh(settings: Settings) -> None:
-    """Write env.sh in the runtime dir for the shell entry point to source.
+    """Write env.sh for the shell entry point to source.
 
     Keeps the hot path Python-free: the shell script reads these values
     instead of invoking ``ssh-concierge-py --config`` on every connection.
 
-    When a config file exists, also writes env.sh next to it so the shell
-    entry point can find it even when runtime_dir is customized.
+    Written next to the config file if one exists (preferred — survives
+    reboots), otherwise in runtime_dir as fallback.
     """
-    content = (
-        f"CONFIG='{settings.hosts_file}'\n"
-        f"TTL='{settings.ttl}'\n"
-    )
+    content = f"CONFIG='{settings.hosts_file}'\nTTL='{settings.ttl}'\n"
 
-    # Always write to runtime dir
-    settings.env_file.parent.mkdir(parents=True, exist_ok=True)
-    settings.env_file.write_text(content)
-
-    # Also write next to config file if one exists (shell entry point looks here first)
     if settings.config_file:
-        config_env = settings.config_file.parent / 'env.sh'
+        config_env = settings.config_file.parent / "env.sh"
         config_env.write_text(content)
+    else:
+        settings.env_file.parent.mkdir(parents=True, exist_ok=True)
+        settings.env_file.write_text(content)
 
 
 def _warn_noexec_askpass(askpass_dir: Path) -> None:
     """Warn if the askpass directory is on a noexec-mounted filesystem."""
-    if not hasattr(os, 'ST_NOEXEC'):
+    if not hasattr(os, "ST_NOEXEC"):
         return  # os.ST_NOEXEC is Linux-only; skip on macOS/other platforms
     try:
         # Check the directory itself, or its parent if it doesn't exist yet
@@ -63,9 +70,9 @@ def _warn_noexec_askpass(askpass_dir: Path) -> None:
         stat_result = os.statvfs(check_path)
         if stat_result.f_flag & os.ST_NOEXEC:
             print(
-                f'WARNING: askpass directory {askpass_dir} is on a noexec filesystem.\n'
-                f'  Password injection will fail. Set askpass_dir in your config file\n'
-                f'  to a path on an executable filesystem (e.g. $XDG_RUNTIME_DIR).',
+                f"WARNING: askpass directory {askpass_dir} is on a noexec filesystem.\n"
+                f"  Password injection will fail. Set askpass_dir in your config file\n"
+                f"  to a path on an executable filesystem (e.g. $XDG_RUNTIME_DIR).",
                 file=sys.stderr,
             )
     except OSError:
@@ -82,27 +89,27 @@ def _get_agent_fingerprints() -> set[str]:
     Returns a set of fingerprint strings (e.g. 'SHA256:abc...').
     Raises AgentQueryError if the agent is unavailable or cannot be queried.
     """
-    if not os.environ.get('SSH_AUTH_SOCK'):
-        raise AgentQueryError('SSH_AUTH_SOCK not set')
+    if not os.environ.get("SSH_AUTH_SOCK"):
+        raise AgentQueryError("SSH_AUTH_SOCK not set")
 
     try:
         result = subprocess.run(
-            ['ssh-add', '-l'],
+            ["ssh-add", "-l"],
             capture_output=True,
             text=True,
             timeout=5,
         )
     except FileNotFoundError:
-        raise AgentQueryError('ssh-add not found')
+        raise AgentQueryError("ssh-add not found")
     except subprocess.TimeoutExpired:
-        raise AgentQueryError('ssh-add timed out')
+        raise AgentQueryError("ssh-add timed out")
     except OSError as exc:
-        raise AgentQueryError(f'ssh-add failed: {exc}')
+        raise AgentQueryError(f"ssh-add failed: {exc}")
 
     if result.returncode != 0:
         stderr = result.stderr.strip()
         raise AgentQueryError(
-            f'ssh-add exited {result.returncode}{": " + stderr if stderr else ""}'
+            f"ssh-add exited {result.returncode}{': ' + stderr if stderr else ''}"
         )
 
     # Format: "bits fingerprint comment (type)"
@@ -122,7 +129,7 @@ def _warn_missing_agent_keys(
     try:
         agent_fps = _get_agent_fingerprints()
     except AgentQueryError as exc:
-        print(f'WARNING: Cannot check SSH agent keys: {exc}', file=sys.stderr)
+        print(f"WARNING: Cannot check SSH agent keys: {exc}", file=sys.stderr)
         return
 
     # Collect fingerprint → alias list for hosts with IdentityFile
@@ -132,7 +139,7 @@ def _warn_missing_agent_keys(
             continue
         if host.fingerprint not in agent_fps:
             missing.setdefault(host.fingerprint, []).extend(
-                a for a in host.aliases if '*' not in a and '?' not in a
+                a for a in host.aliases if "*" not in a and "?" not in a
             )
 
     if not missing:
@@ -143,21 +150,24 @@ def _warn_missing_agent_keys(
     for host in hosts:
         if host.fingerprint and not fp_to_key.get(host.fingerprint):
             for alias in host.aliases:
-                if key_ref := hostdata.get(alias, {}).get('key'):
+                if key_ref := hostdata.get(alias, {}).get("key"):
                     fp_to_key[host.fingerprint] = key_ref
                     break
 
-    print('WARNING: SSH keys exported but not available in the SSH agent:', file=sys.stderr)
+    print(
+        "WARNING: SSH keys exported but not available in the SSH agent:",
+        file=sys.stderr,
+    )
     for fp, aliases in missing.items():
-        key_name = fp_to_key.get(fp, '')
-        key_info = f' ({key_name})' if key_name else ''
-        alias_list = ', '.join(sorted(set(aliases)))
+        key_name = fp_to_key.get(fp, "")
+        key_info = f" ({key_name})" if key_name else ""
+        alias_list = ", ".join(sorted(set(aliases)))
         print(
-            f'  {fp}{key_info}: {alias_list}',
+            f"  {fp}{key_info}: {alias_list}",
             file=sys.stderr,
         )
     print(
-        '  Check that the corresponding keys are enabled in the 1Password SSH agent.',
+        "  Check that the corresponding keys are enabled in the 1Password SSH agent.",
         file=sys.stderr,
     )
 
@@ -175,9 +185,15 @@ def resolve_host_fields(
     For each FieldValue:
     - Normalize dot-refs (op://././field → op://vault/item/field)
     - Check cache (skip resolution if original unchanged)
-    - Resolve non-sensitive references via op.read()
+    - Resolve non-sensitive references via op.resolve()
     - Sensitive fields stay unresolved (resolved at SSH time)
     """
+
+    def _resolve_fv(fv: FieldValue) -> FieldValue:
+        """Resolve a single FieldValue using the op-core client."""
+        if fv.sensitive:
+            return fv
+        return fv.with_resolved(op.resolve(fv))
 
     def _resolve_field(name: str, fv: FieldValue) -> FieldValue:
         try:
@@ -189,47 +205,50 @@ def resolve_host_fields(
                     f'on item {meta.display_name} — auto-completed to "{completed}"',
                     file=sys.stderr,
                 )
-                fv = dataclasses.replace(fv, original=completed)
+                fv = FieldValue.from_raw(completed, name)
 
             # Normalize self-refs so the wrapper can resolve without item metadata
             normalized = normalize_original(fv.original, meta.vault_id, meta.item_id)
             if normalized != fv.original:
-                fv = dataclasses.replace(fv, original=normalized)
+                fv = FieldValue.from_raw(normalized, name)
 
             if fv.sensitive:
                 return fv  # Don't resolve at generation time
 
             cached = cached_fields.get(name) if cached_fields and not no_cache else None
-            if not fv.needs_resolution(cached):
+            if cached is not None and fv.original == cached.original:
                 # Original unchanged — but the target value may have changed.
-                # Check if the resolved value is still current (cache-only, no CLI calls).
-                if cached and cached.field_type == 'reference':  # type: ignore[union-attr]
-                    fresh = resolve_chain(fv.original, op, cache_only=True)
-                    if fresh is not None and fresh != cached.resolved:  # type: ignore[union-attr]
-                        return fv.resolve(op, vault_id=meta.vault_id, item_id=meta.item_id)
-                return cached  # type: ignore[return-value]
+                # Re-probe via op.resolve: same-item / cross-managed-item refs
+                # hit the seeded InMemoryBackend; refs to unmanaged items fall
+                # through to the live CLIBackend.
+                if cached.field_type == "reference":
+                    fresh = op.resolve(fv)
+                    if fresh is not None and fresh != cached.resolved:
+                        return fv.with_resolved(fresh)
+                return cached
 
-            return fv.resolve(op, vault_id=meta.vault_id, item_id=meta.item_id)
+            return _resolve_fv(fv)
         except ValueError as exc:
             print(
                 f'ssh-concierge: bad reference in field "{name}" '
-                f'on item {meta.display_name}: {exc}',
+                f"on item {meta.display_name}: {exc}",
                 file=sys.stderr,
             )
             return fv
 
-    def _resolve_optional(name: str, fv: FieldValue | None) -> FieldValue | None:
-        return _resolve_field(name, fv) if fv else None
-
     return dataclasses.replace(
         host,
-        hostname=_resolve_optional('hostname', host.hostname),
-        port=_resolve_optional('port', host.port),
-        user=_resolve_optional('user', host.user),
-        password=_resolve_optional('password', host.password),
-        otp=_resolve_optional('otp', host.otp),
-        extra_directives={k: _resolve_field(k, fv) for k, fv in host.extra_directives.items()},
-        custom_fields={k: _resolve_field(k, fv) for k, fv in host.custom_fields.items()},
+        hostname=_resolve_field("hostname", host.hostname) if host.hostname else None,
+        port=_resolve_field("port", host.port) if host.port else None,
+        user=_resolve_field("user", host.user) if host.user else None,
+        password=_resolve_field("password", host.password) if host.password else None,
+        otp=_resolve_field("otp", host.otp) if host.otp else None,
+        extra_directives={
+            k: _resolve_field(k, fv) for k, fv in host.extra_directives.items()
+        },
+        custom_fields={
+            k: _resolve_field(k, fv) for k, fv in host.custom_fields.items()
+        },
     )
 
 
@@ -239,21 +258,21 @@ def _build_hostdata_entry(host: HostConfig) -> dict | None:
     Iterates all FieldValues already on the HostConfig and serializes them.
     Returns None if the host has no fields worth storing.
     """
-    fields = {name: fv.to_hostdata() for name, fv in _iter_host_fields(host)}
+    fields = {name: fv.to_dict() for name, fv in _iter_host_fields(host)}
 
     entry: dict = {}
     if host.host_filter:
-        entry['on'] = host.host_filter
+        entry["on"] = host.host_filter
     if host.clipboard:
-        entry['clipboard'] = host.clipboard
+        entry["clipboard"] = host.clipboard
     if host.key_ref:
-        entry['key'] = host.key_ref
+        entry["key"] = host.key_ref
     if host.password_prompt:
-        entry['password_prompt'] = host.password_prompt
+        entry["password_prompt"] = host.password_prompt
     if host.otp_prompt:
-        entry['otp_prompt'] = host.otp_prompt
+        entry["otp_prompt"] = host.otp_prompt
     if fields:
-        entry['fields'] = fields
+        entry["fields"] = fields
 
     return entry or None
 
@@ -261,11 +280,11 @@ def _build_hostdata_entry(host: HostConfig) -> dict | None:
 def _iter_host_fields(host: HostConfig):
     """Yield (name, FieldValue) for all resolvable fields on a HostConfig."""
     for name, fv in [
-        ('password', host.password),
-        ('otp', host.otp),
-        ('hostname', host.hostname),
-        ('port', host.port),
-        ('user', host.user),
+        ("password", host.password),
+        ("otp", host.otp),
+        ("hostname", host.hostname),
+        ("port", host.port),
+        ("user", host.user),
     ]:
         if fv is not None:
             yield name, fv
@@ -287,30 +306,27 @@ def _load_cached_hostdata(hostdata_file: Path) -> dict[str, dict[str, FieldValue
 
     return {
         alias: {
-            name: FieldValue.from_hostdata(fdata, name)
-            for name, fdata in entry.get('fields', {}).items()
+            name: FieldValue.from_dict(fdata)
+            for name, fdata in entry.get("fields", {}).items()
         }
         for alias, entry in data.items()
-        if entry.get('fields')
+        if entry.get("fields")
     }
 
 
-def _extract_key_pair(item: dict) -> tuple[str, str] | None:
+def _extract_key_pair(item: Item) -> tuple[str, str] | None:
     """Extract (public_key, fingerprint) from top-level item fields, or None."""
     public_key = None
     fingerprint = None
-    for f in item.get('fields', []):
-        if f.get('section'):
-            continue
-        label = f.get('label')
-        if label == 'public key':
-            public_key = f.get('value')
-        elif label == 'fingerprint':
-            fingerprint = f.get('value')
+    for f in item.top_level_fields():
+        if f.label == "public key":
+            public_key = f.value
+        elif f.label == "fingerprint":
+            fingerprint = f.value
     return (public_key, fingerprint) if public_key and fingerprint else None
 
 
-def _build_key_registry(items: list[dict]) -> dict[tuple, tuple[str, str]]:
+def _build_key_registry(items: list[Item]) -> dict[tuple, tuple[str, str]]:
     """Build a registry of SSH key data from fetched items.
 
     Maps (vault_name.lower(), title.lower()) and (item_id,) → (public_key, fingerprint).
@@ -320,13 +336,10 @@ def _build_key_registry(items: list[dict]) -> dict[tuple, tuple[str, str]]:
         key_pair = _extract_key_pair(item)
         if not key_pair:
             continue
-        vault_name = item.get('vault', {}).get('name', '')
-        title = item.get('title', '')
-        item_id = item.get('id', '')
-        if vault_name and title:
-            registry[(vault_name.lower(), title.lower())] = key_pair
-        if item_id:
-            registry[(item_id,)] = key_pair
+        if item.vault_name and item.title:
+            registry[(item.vault_name.lower(), item.title.lower())] = key_pair
+        if item.id:
+            registry[(item.id,)] = key_pair
     return registry
 
 
@@ -348,52 +361,82 @@ def _resolve_key_ref(
     if not host.key_ref or host.public_key:
         return host
 
-    aliases = ', '.join(host.aliases)
+    aliases = ", ".join(host.aliases)
     key_ref = host.key_ref
 
     try:
         ref = OpRef.parse(key_ref)
     except ValueError:
-        print(f'ssh-concierge: invalid key reference "{key_ref}" on host {aliases}', file=sys.stderr)
+        print(
+            f'ssh-concierge: invalid key reference "{key_ref}" on host {aliases}',
+            file=sys.stderr,
+        )
         return host
 
     # Resolve field-level refs (e.g. op://././SSH Config/key) via seeded cache
     if ref.is_complete and op is not None:
-        if ref.is_same_vault:
+        if ref.is_vault_relative:
             if not meta:
-                print(f'ssh-concierge: cannot resolve dot-ref "{key_ref}" without item metadata (host {aliases})', file=sys.stderr)
+                print(
+                    f'ssh-concierge: cannot resolve dot-ref "{key_ref}" '
+                    f"without item metadata (host {aliases})",
+                    file=sys.stderr,
+                )
                 return host
-            resolved = op.read(ref.normalized(meta.vault_id, meta.item_id).for_op(), cache_only=True)
+            resolved = op.read(ref.as_absolute(meta.vault_id, meta.item_id).for_op())
         else:
-            resolved = op.read(ref.for_op(), cache_only=True)
+            resolved = op.read(ref.for_op())
         if not resolved:
-            print(f'ssh-concierge: key reference "{key_ref}" could not be resolved (host {aliases})', file=sys.stderr)
+            print(
+                f'ssh-concierge: key reference "{key_ref}" '
+                f"could not be resolved (host {aliases})",
+                file=sys.stderr,
+            )
             return host
         # Re-parse the resolved value as an item ref
         try:
             ref = OpRef.parse(resolved)
         except ValueError:
-            print(f'ssh-concierge: key reference "{key_ref}" resolved to invalid ref "{resolved}" (host {aliases})', file=sys.stderr)
+            print(
+                f'ssh-concierge: key reference "{key_ref}" '
+                f'resolved to invalid ref "{resolved}" (host {aliases})',
+                file=sys.stderr,
+            )
             return host
         if ref.is_complete:
-            print(f'ssh-concierge: key reference "{key_ref}" resolved to field ref, expected item ref (host {aliases})', file=sys.stderr)
+            print(
+                f'ssh-concierge: key reference "{key_ref}" '
+                f"resolved to field ref, expected item ref (host {aliases})",
+                file=sys.stderr,
+            )
             return host
 
     # At this point ref should be an item-level ref (vault/item, no field)
-    if ref.is_same_vault and not meta:
-        print(f'ssh-concierge: cannot resolve same-vault ref "{key_ref}" without item metadata (host {aliases})', file=sys.stderr)
+    if ref.is_vault_relative and not meta:
+        print(
+            f'ssh-concierge: cannot resolve same-vault ref "{key_ref}" '
+            f"without item metadata (host {aliases})",
+            file=sys.stderr,
+        )
         return host
 
-    vault = meta.vault_name if ref.is_same_vault and meta else ref.vault
+    vault = meta.vault_name if ref.is_vault_relative and meta else ref.vault
     title = ref.item
 
-    if title == SELF_MARKER:
-        print(f'ssh-concierge: key reference cannot use "." in item position (host {aliases})', file=sys.stderr)
+    if ref.is_item_relative:
+        print(
+            'ssh-concierge: key reference cannot use "." '
+            f"in item position (host {aliases})",
+            file=sys.stderr,
+        )
         return host
 
     key = key_registry.get((vault.lower(), title.lower()))
     if not key:
-        print(f'ssh-concierge: key "{key_ref}" not found (host {aliases})', file=sys.stderr)
+        print(
+            f'ssh-concierge: key "{key_ref}" not found (host {aliases})',
+            file=sys.stderr,
+        )
         return host
 
     return dataclasses.replace(host, public_key=key[0], fingerprint=key[1])
@@ -433,35 +476,49 @@ def cmd_generate(
         if not quiet:
             print("Querying 1Password...")
 
-        op = OnePassword(op_timeout=settings.op_timeout)
+        live = OnePassword(CLIBackend(timeout=settings.op_timeout))
 
         # Load cached hostdata for cache comparison
-        cached_hostdata = _load_cached_hostdata(settings.hostdata_file) if not no_cache else {}
+        cached_hostdata = (
+            _load_cached_hostdata(settings.hostdata_file) if not no_cache else {}
+        )
 
-        item_ids = op.list_managed_item_ids()
+        # Two list_items calls + dedup: SSH Keys by category, others by tag.
+        # op-core ANDs tags+categories, so OR requires two calls.
+        summaries_by_id = {}
+        for s in live.list_items(categories=["SSH_KEY"]):
+            summaries_by_id[s.id] = s
+        for s in live.list_items(tags=[SSH_HOST_TAG]):
+            summaries_by_id[s.id] = s
+
         hosts = []
         hostdata: dict[str, dict] = {}
-        items_processed = 0
 
         # First pass: fetch all items, parse into HostConfigs, build key registry
-        raw_items: list[dict] = []
+        fetched: list[Item] = []
         parsed: list[tuple[HostConfig, ItemMeta]] = []
-        for item_id in item_ids:
-            item = op.get_item(item_id)
-            items_processed += 1
-            raw_items.append(item)
-            vault = item.get('vault', {})
+        for summary in summaries_by_id.values():
+            item = live.get_item(summary)
+            fetched.append(item)
             meta = ItemMeta(
-                vault_id=vault.get('id', ''),
-                item_id=item.get('id', ''),
-                vault_name=vault.get('name', ''),
-                item_title=item.get('title', ''),
+                vault_id=item.vault_id,
+                item_id=item.id,
+                vault_name=item.vault_name,
+                item_title=item.title,
             )
             for host in parse_item_to_host_configs(item):
                 parsed.append((host, meta))
 
-        key_registry = _build_key_registry(raw_items)
-        op.seed_from_items(raw_items)
+        key_registry = _build_key_registry(fetched)
+
+        # Build an in-memory client seeded with all fetched items for
+        # cache-aware resolution (non-sensitive refs hit local data)
+        op = OnePassword(
+            InMemoryBackend(
+                items=fetched,
+                fallback=CLIBackend(timeout=settings.op_timeout),
+            )
+        )
 
         # Filter by local hostname
         local_hostname = socket.gethostname()
@@ -473,18 +530,24 @@ def cmd_generate(
             for expanded in expand_host_config(host):
                 # Use first non-wildcard alias for cache lookup
                 cache_alias = next(
-                    (a for a in expanded.aliases if '*' not in a and '?' not in a),
+                    (a for a in expanded.aliases if "*" not in a and "?" not in a),
                     None,
                 )
-                cached_fields = cached_hostdata.get(cache_alias) if cache_alias else None
+                cached_fields = (
+                    cached_hostdata.get(cache_alias) if cache_alias else None
+                )
                 resolved_host = resolve_host_fields(
-                    expanded, meta, cached_fields, op, no_cache=no_cache,
+                    expanded,
+                    meta,
+                    cached_fields,
+                    op,
+                    no_cache=no_cache,
                 )
                 hosts.append(resolved_host)
                 entry = _build_hostdata_entry(resolved_host)
                 if entry:
                     for alias in resolved_host.aliases:
-                        if '*' not in alias and '?' not in alias:
+                        if "*" not in alias and "?" not in alias:
                             hostdata[alias] = entry
 
         generate_runtime_config(
@@ -500,20 +563,24 @@ def cmd_generate(
         _write_env_sh(settings)
 
         password_count = sum(
-            1 for e in hostdata.values()
-            if any(f.get('sensitive') for f in e.get('fields', {}).values())
+            1
+            for e in hostdata.values()
+            if any(f.get("sensitive") for f in e.get("fields", {}).values())
         )
-        clipboard_count = sum(1 for e in hostdata.values() if 'clipboard' in e)
+        clipboard_count = sum(1 for e in hostdata.values() if "clipboard" in e)
         if not quiet:
             print(
-                f"Generated: {len(hosts)} hosts from {items_processed} items"
+                f"Generated: {len(hosts)} hosts from {len(fetched)} items"
                 f" ({password_count} password, {clipboard_count} clipboard)"
             )
             print(f"Config:    {settings.hosts_file}")
             if hostdata:
                 print(f"Hostdata:  {settings.hostdata_file}")
             if settings.ttl == 0:
-                print("Note: Auto-update is disabled (ttl=0). Run --generate manually to refresh.")
+                print(
+                    "Note: Auto-update is disabled (ttl=0). "
+                    "Run --generate manually to refresh."
+                )
 
         if password_count > 0:
             _warn_noexec_askpass(settings.askpass_dir)
@@ -544,9 +611,9 @@ def cmd_status(settings: Settings) -> None:
 
     age_min = int(age_secs // 60)
     if settings.ttl == 0:
-        status = 'manual'
+        status = "manual"
     else:
-        status = 'STALE' if age_secs >= settings.ttl else 'fresh'
+        status = "STALE" if age_secs >= settings.ttl else "fresh"
 
     print(f"Config: {conf}")
     print(f"Status: {status} (age: {age_min}m)")
@@ -561,25 +628,25 @@ def _agent_key_status(identity_line: str) -> str:
     Returns '  ✓ available in SSH agent', '  ⚠ NOT in SSH agent (...)', or ''.
     """
     parts = identity_line.strip().split(None, 1)
-    key_path = parts[1] if len(parts) == 2 else ''
-    if not key_path.endswith('.pub'):
-        return ''
+    key_path = parts[1] if len(parts) == 2 else ""
+    if not key_path.endswith(".pub"):
+        return ""
 
-    fp = Path(key_path).stem.replace('_', '/')
+    fp = Path(key_path).stem.replace("_", "/")
     try:
         agent_fps = _get_agent_fingerprints()
     except AgentQueryError as exc:
-        return f'  ⚠ cannot check agent: {exc}'
+        return f"  ⚠ cannot check agent: {exc}"
     if fp in agent_fps:
-        return '  ✓ available in SSH agent'
-    return '  ⚠ NOT in SSH agent (check 1Password agent vault config)'
+        return "  ✓ available in SSH agent"
+    return "  ⚠ NOT in SSH agent (check 1Password agent vault config)"
 
 
 def cmd_debug(alias: str, settings: Settings) -> None:
     """Show the generated config block for a given alias."""
     conf = settings.hosts_file
     if not conf.exists():
-        print('No config generated yet. Run: ssh-concierge --generate')
+        print("No config generated yet. Run: ssh-concierge --generate")
         return
 
     content = conf.read_text()
@@ -588,7 +655,7 @@ def cmd_debug(alias: str, settings: Settings) -> None:
     # Find the Host block containing this alias
     block_start = None
     for i, line in enumerate(lines):
-        if line.startswith('Host '):
+        if line.startswith("Host "):
             aliases_on_line = line[5:].split()
             if alias in aliases_on_line:
                 block_start = i
@@ -601,7 +668,7 @@ def cmd_debug(alias: str, settings: Settings) -> None:
     # Collect the block: Host line + indented lines until next Host or EOF
     block_lines = [lines[block_start]]
     for i in range(block_start + 1, len(lines)):
-        if lines[i].startswith('Host '):
+        if lines[i].startswith("Host "):
             break
         block_lines.append(lines[i])
 
@@ -610,64 +677,68 @@ def cmd_debug(alias: str, settings: Settings) -> None:
         block_lines.pop()
 
     # Print the block
-    print('\n'.join(block_lines))
+    print("\n".join(block_lines))
 
     # Look up hostdata
     entry = lookup_hostdata(alias, settings.hostdata_file)
     if entry:
         # Host filter
-        on_filter = entry.get('on')
+        on_filter = entry.get("on")
         if on_filter:
-            print(f'    # On: {on_filter}')
+            print(f"    # On: {on_filter}")
 
         # Key reference
-        key = entry.get('key')
-        identity_line = next((line for line in block_lines if 'IdentityFile' in line), None)
+        key = entry.get("key")
+        identity_line = next(
+            (line for line in block_lines if "IdentityFile" in line), None
+        )
         if key:
             if not identity_line:
-                print(f'    # Key: {key}  ⚠ NOT RESOLVED (no IdentityFile generated)')
+                print(f"    # Key: {key}  ⚠ NOT RESOLVED (no IdentityFile generated)")
             else:
                 agent_status = _agent_key_status(identity_line)
-                print(f'    # Key: {key}{agent_status}')
+                print(f"    # Key: {key}{agent_status}")
 
         # All fields with resolution status
-        fields = entry.get('fields', {})
+        fields = entry.get("fields", {})
         if fields:
-            print('    # Fields:')
+            print("    # Fields:")
             for name, fdata in fields.items():
-                original = fdata.get('original', '?')
-                resolved = fdata.get('resolved')
-                sensitive = fdata.get('sensitive', False)
+                original = fdata.get("original", "?")
+                resolved = fdata.get("resolved")
+                sensitive = fdata.get("sensitive", False)
                 if sensitive:
-                    print(f'    #   {name}: {original}  (sensitive, resolved at SSH time)')
+                    print(
+                        f"    #   {name}: {original}  (sensitive, resolved at SSH time)"
+                    )
                 elif resolved is not None and resolved != original:
-                    print(f'    #   {name}: {original} → {resolved}')
+                    print(f"    #   {name}: {original} → {resolved}")
                 elif resolved is not None:
-                    print(f'    #   {name}: {original}')
+                    print(f"    #   {name}: {original}")
                 else:
-                    print(f'    #   {name}: {original}  ⚠ UNRESOLVED')
+                    print(f"    #   {name}: {original}  ⚠ UNRESOLVED")
 
         # Prompt overrides
-        pw_prompt = entry.get('password_prompt')
+        pw_prompt = entry.get("password_prompt")
         if pw_prompt:
-            print(f'    # Password prompt: {pw_prompt}')
-        otp_prompt = entry.get('otp_prompt')
+            print(f"    # Password prompt: {pw_prompt}")
+        otp_prompt = entry.get("otp_prompt")
         if otp_prompt:
-            print(f'    # OTP prompt: {otp_prompt}')
+            print(f"    # OTP prompt: {otp_prompt}")
 
         # Clipboard
-        clipboard = entry.get('clipboard')
+        clipboard = entry.get("clipboard")
         if clipboard:
-            print(f'    # Clipboard: {clipboard!r}')
+            print(f"    # Clipboard: {clipboard!r}")
 
     # Config age
     age_secs = time.time() - conf.stat().st_mtime
     age_min = int(age_secs // 60)
     if settings.ttl == 0:
-        status = 'manual'
+        status = "manual"
     else:
-        status = 'STALE' if age_secs >= settings.ttl else 'fresh'
-    print(f'\nConfig age: {age_min}m ({status})')
+        status = "STALE" if age_secs >= settings.ttl else "fresh"
+    print(f"\nConfig age: {age_min}m ({status})")
 
 
 def cmd_list(settings: Settings) -> None:
@@ -689,12 +760,12 @@ def cmd_config(directive: str | None, settings: Settings) -> None:
         try:
             print(settings.get(directive))
         except KeyError:
-            print(f'unknown directive: {directive}', file=sys.stderr)
-            print(f'available: {", ".join(Settings.DIRECTIVES)}', file=sys.stderr)
+            print(f"unknown directive: {directive}", file=sys.stderr)
+            print(f"available: {', '.join(Settings.DIRECTIVES)}", file=sys.stderr)
             sys.exit(1)
     else:
         for name in Settings.DIRECTIVES:
-            print(f'{name}={settings.get(name)}')
+            print(f"{name}={settings.get(name)}")
 
 
 def main() -> None:
@@ -704,17 +775,39 @@ def main() -> None:
         description="Dynamic SSH configuration provider backed by 1Password",
     )
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--generate", action="store_true", help="Regenerate runtime config from 1Password")
+    group.add_argument(
+        "--generate",
+        action="store_true",
+        help="Regenerate runtime config from 1Password",
+    )
     group.add_argument("--flush", action="store_true", help="Remove runtime config")
     group.add_argument("--list", action="store_true", help="List managed hosts")
     group.add_argument("--status", action="store_true", help="Show config status")
-    group.add_argument("--debug", metavar="ALIAS", help="Show generated config for a host alias")
+    group.add_argument(
+        "--debug", metavar="ALIAS", help="Show generated config for a host alias"
+    )
     group.add_argument("--deploy-key", metavar="ALIAS", help="Deploy SSH key to a host")
-    group.add_argument("--config", nargs="?", const="", metavar="DIRECTIVE", help="Show config value (or all if no directive given)")
+    group.add_argument(
+        "--config",
+        nargs="?",
+        const="",
+        metavar="DIRECTIVE",
+        help="Show config value (or all if no directive given)",
+    )
 
-    parser.add_argument("--all", action="store_true", help="Deploy to all sibling hosts (only with --deploy-key)")
-    parser.add_argument("--no-cache", action="store_true", help="Force re-resolution of all field references")
-    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress informational output")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Deploy to all sibling hosts (only with --deploy-key)",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Force re-resolution of all field references",
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", help="Suppress informational output"
+    )
 
     args = parser.parse_args()
 
