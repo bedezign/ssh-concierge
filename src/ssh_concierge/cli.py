@@ -20,10 +20,12 @@ from op_core import (
     FieldValue,
     InMemoryBackend,
     Item,
+    ItemSummary,
     OnePassword,
     OpRef,
     normalize_original,
 )
+from tqdm import tqdm
 
 from ssh_concierge.config import generate_runtime_config
 from ssh_concierge.deploy import cmd_deploy_key
@@ -483,13 +485,34 @@ def cmd_generate(
             _load_cached_hostdata(settings.hostdata_file) if not no_cache else {}
         )
 
-        # Two list_items calls + dedup: SSH Keys by category, others by tag.
-        # op-core ANDs tags+categories, so OR requires two calls.
-        summaries_by_id = {}
-        for s in live.list_items(categories=["SSH_KEY"]):
-            summaries_by_id[s.id] = s
-        for s in live.list_items(tags=[SSH_HOST_TAG]):
-            summaries_by_id[s.id] = s
+        progress_disable = quiet or None
+
+        # Per-vault scoped listing. An unscoped `op item list` walks every
+        # vault and is dramatically slower on accounts with many vaults; per-
+        # vault calls return small, fast results. op-core ANDs tags+categories,
+        # so the OR (SSH_KEY category | SSH_HOST_TAG tag) requires two calls
+        # per vault.
+        if not quiet:
+            tqdm.write("  Listing vaults...")
+        vaults = live.list_vaults()
+        if not quiet:
+            tqdm.write(f"    {len(vaults)} found")
+
+        summaries_by_id: dict[str, ItemSummary] = {}
+        for v in tqdm(
+            vaults,
+            desc="Scanning vaults",
+            unit="vault",
+            disable=progress_disable,
+            leave=False,
+        ):
+            for s in live.list_items(vault=v.id, categories=["SSH_KEY"]):
+                summaries_by_id[s.id] = s
+            for s in live.list_items(vault=v.id, tags=[SSH_HOST_TAG]):
+                summaries_by_id[s.id] = s
+
+        if not quiet:
+            tqdm.write(f"  {len(summaries_by_id)} matching items to fetch")
 
         hosts = []
         hostdata: dict[str, dict] = {}
@@ -497,7 +520,13 @@ def cmd_generate(
         # First pass: fetch all items, parse into HostConfigs, build key registry
         fetched: list[Item] = []
         parsed: list[tuple[HostConfig, ItemMeta]] = []
-        for summary in summaries_by_id.values():
+        for summary in tqdm(
+            summaries_by_id.values(),
+            desc="Fetching items",
+            unit="item",
+            disable=progress_disable,
+            leave=False,
+        ):
             item = live.get_item(summary)
             fetched.append(item)
             meta = ItemMeta(
@@ -522,10 +551,21 @@ def cmd_generate(
 
         # Filter by local hostname
         local_hostname = socket.gethostname()
+        parsed_total = len(parsed)
         parsed = [(h, m) for h, m in parsed if h.matches_host(local_hostname)]
+        if not quiet:
+            tqdm.write(
+                f"  {len(parsed)} of {parsed_total} hosts match '{local_hostname}'"
+            )
 
         # Second pass: resolve key refs, expand, resolve fields, generate
-        for host, meta in parsed:
+        for host, meta in tqdm(
+            parsed,
+            desc="Resolving fields",
+            unit="host",
+            disable=progress_disable,
+            leave=False,
+        ):
             host = _resolve_key_ref(host, key_registry, op, meta)
             for expanded in expand_host_config(host):
                 # Use first non-wildcard alias for cache lookup

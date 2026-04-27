@@ -8,7 +8,15 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from op_core import FieldValue, Item, ItemField, ItemSection, ItemSummary, OpError
+from op_core import (
+    FieldValue,
+    Item,
+    ItemField,
+    ItemSection,
+    ItemSummary,
+    OpError,
+    VaultSummary,
+)
 
 from ssh_concierge.cli import (
     AgentQueryError,
@@ -63,16 +71,21 @@ def _fake_item(item_id: str, vault_id: str = "v1", category: str = "SSH_KEY") ->
 
 
 def _configure_mock_op(mock_op_cls, item_ids: list[str]) -> MagicMock:
-    """Configure a mocked OnePassword class so list_items+get_item return fakes.
+    """Configure a mocked OnePassword class so list_*+get_item return fakes.
 
     ``mock_op_cls`` comes from ``@patch('ssh_concierge.cli.OnePassword')``. The
-    mock is called twice by cmd_generate (once for SSH_KEY, once for SSH Host);
-    we return all items on the first call and none on the second to match the
+    mock surfaces a single vault from ``list_vaults``; ``list_items`` is then
+    called twice for that vault (once for SSH_KEY, once for SSH Host) and we
+    return all items on the first call and none on the second to match the
     two-call dedup pattern without duplicating ids.
+
+    Tests adding a second VaultSummary to list_vaults must extend the side_effect
+    list to match the additional list_items calls (two per vault).
     """
     mock_op = mock_op_cls.return_value
     summaries = [_fake_summary(i) for i in item_ids]
     items_by_id = {i: _fake_item(i) for i in item_ids}
+    mock_op.list_vaults.return_value = [VaultSummary(id="v1", name="Vault")]
     mock_op.list_items.side_effect = [summaries, []]
     mock_op.get_item.side_effect = lambda summary, **kwargs: items_by_id[summary.id]
     mock_op.resolve.return_value = None
@@ -151,7 +164,7 @@ class TestCmdGenerate:
     @patch("ssh_concierge.cli.OnePassword")
     def test_op_error_raises(self, mock_op_cls, runtime_dir: Path):
         mock_op = mock_op_cls.return_value
-        mock_op.list_items.side_effect = OpError("not signed in")
+        mock_op.list_vaults.side_effect = OpError("not signed in")
         with pytest.raises(OpError):
             cmd_generate(_make_settings(runtime_dir))
 
@@ -175,6 +188,16 @@ class TestCmdGenerate:
         content = (runtime_dir / "hosts.conf").read_text()
         assert "Host work-server" in content
 
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_empty_vault_list(self, mock_op_cls, runtime_dir: Path):
+        mock_op = mock_op_cls.return_value
+        mock_op.list_vaults.return_value = []
+
+        cmd_generate(_make_settings(runtime_dir))
+
+        mock_op.list_items.assert_not_called()
+        assert (runtime_dir / "hosts.conf").exists()
+
     @patch("ssh_concierge.cli.socket")
     @patch("ssh_concierge.cli.OnePassword")
     def test_host_filter_excludes_non_matching(
@@ -194,6 +217,94 @@ class TestCmdGenerate:
 
         content = (runtime_dir / "hosts.conf").read_text()
         assert "Host work-server" not in content
+
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_partial_failure_mid_vault_propagates(self, mock_op_cls, runtime_dir: Path):
+        mock_op = mock_op_cls.return_value
+        mock_op.list_vaults.return_value = [
+            VaultSummary(id="v1", name="A"),
+            VaultSummary(id="v2", name="B"),
+        ]
+        # v1: SSH_KEY returns one summary, SSH Host returns nothing.
+        # v2: SSH_KEY call raises OpError.
+        mock_op.list_items.side_effect = [
+            [_fake_summary("item1", vault_id="v1")],
+            [],
+            OpError("fail"),
+        ]
+
+        with pytest.raises(OpError):
+            cmd_generate(_make_settings(runtime_dir))
+
+        assert not (runtime_dir / "hostdata.json").exists()
+
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_duplicate_item_across_vaults_deduped(self, mock_op_cls, runtime_dir: Path):
+        mock_op = mock_op_cls.return_value
+        dup_summary = _fake_summary("dup", vault_id="v1")
+        mock_op.list_vaults.return_value = [
+            VaultSummary(id="v1", name="A"),
+            VaultSummary(id="v2", name="B"),
+        ]
+        # Each vault returns the same summary from both list_items calls.
+        mock_op.list_items.side_effect = [
+            [dup_summary],  # v1 SSH_KEY
+            [],  # v1 SSH Host
+            [dup_summary],  # v2 SSH_KEY
+            [],  # v2 SSH Host
+        ]
+        mock_op.get_item.return_value = _fake_item("dup", vault_id="v1")
+        mock_op.resolve.return_value = None
+
+        with patch("ssh_concierge.cli.parse_item_to_host_configs", return_value=[]):
+            cmd_generate(_make_settings(runtime_dir))
+
+        mock_op.get_item.assert_called_once()
+
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_idempotent_double_generation(self, mock_op_cls, runtime_dir: Path):
+        mock_op = mock_op_cls.return_value
+        mock_op.list_vaults.return_value = [VaultSummary(id="v1", name="Vault")]
+        mock_op.resolve.return_value = None
+
+        summary = _fake_summary("id1")
+        item = _fake_item("id1")
+
+        def reset_side_effects():
+            mock_op.list_items.side_effect = [[summary], []]
+            mock_op.get_item.return_value = item
+
+        reset_side_effects()
+        with patch("ssh_concierge.cli.parse_item_to_host_configs") as mock_parse:
+            mock_parse.return_value = [SAMPLE_HOSTS[0]]
+            cmd_generate(_make_settings(runtime_dir))
+            first_content = (runtime_dir / "hosts.conf").read_bytes()
+
+        reset_side_effects()
+        with patch("ssh_concierge.cli.parse_item_to_host_configs") as mock_parse:
+            mock_parse.return_value = [SAMPLE_HOSTS[0]]
+            cmd_generate(_make_settings(runtime_dir))
+            second_content = (runtime_dir / "hosts.conf").read_bytes()
+
+        assert first_content == second_content
+
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_quiet_suppresses_progress_output(
+        self, mock_op_cls, runtime_dir: Path, capsys
+    ):
+        mock_op = mock_op_cls.return_value
+        mock_op.list_vaults.return_value = [VaultSummary(id="v1", name="Vault")]
+        mock_op.list_items.side_effect = [[_fake_summary("id1")], []]
+        mock_op.get_item.return_value = _fake_item("id1")
+        mock_op.resolve.return_value = None
+
+        with patch("ssh_concierge.cli.parse_item_to_host_configs", return_value=[]):
+            cmd_generate(_make_settings(runtime_dir), quiet=True)
+
+        stdout = capsys.readouterr().out
+        assert "Listing vaults" not in stdout
+        assert "matching items to fetch" not in stdout
+        assert "hosts match" not in stdout
 
 
 class TestCmdFlush:
