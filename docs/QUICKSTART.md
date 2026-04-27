@@ -78,7 +78,7 @@ ssh-concierge --list
 ssh myserver
 ```
 
-The first connection after the cache expires (1 hour) triggers a regeneration automatically. Subsequent connections are instant.
+By default, the cache only regenerates when you run `ssh-concierge --generate` explicitly (TTL=0, manual mode). Set `ttl` in `~/.config/ssh-concierge/config.toml` to a positive value (e.g. `3600`) to enable time-based auto-refresh on the first connection after expiry. Subsequent connections are always instant — the shell entry point just checks the file's mtime.
 
 ## Force refresh
 

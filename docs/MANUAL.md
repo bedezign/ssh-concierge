@@ -4,7 +4,7 @@
 
 ssh-concierge has two layers:
 
-- A **shell entry point** called by SSH's `Match exec` on every connection. It checks if the generated config file is fresh (< 1 hour old). If yes, it exits immediately — sub-millisecond, no Python involved.
+- A **shell entry point** called by SSH's `Match exec` on every connection. It checks the generated config file's age against the configured TTL (default 0 — manual mode, only `--generate` regenerates; set `ttl` to a positive value for time-based auto-refresh). If fresh, it exits immediately — sub-millisecond, no Python involved.
 - A **Python core** that queries 1Password, builds SSH config fragments, and dumps public keys. Only runs on the cold path (first connection or expired cache).
 
 The generated config lives in a [runtime directory](#runtime-config) (`$XDG_RUNTIME_DIR/ssh-concierge/`): `hosts.conf` is the SSH config fragment, `hostdata.json` caches field data for the SSH/SCP wrapper, and `keys/` holds public keys for `IdentityFile` hinting.
@@ -277,7 +277,7 @@ Any field value (not just `password`) can contain `op://` references with option
 | `op://././Section/field` | `op://././SSH Config/password` | Self-reference with explicit section |
 | `op://./Item/field` | `op://./ServerLogin/password` | Same-vault cross-item reference |
 | `op://./Item` | `op://./ServerLogin` | Same-vault item reference (for `key` field) |
-| `ops://...` | `ops://././password` | Same as `op://` but marks the field as **sensitive** |
+| `ops://...` | `ops://././password` | Identical to `op://` but marks the entire field as **sensitive** (never cached on disk), even when the field name doesn't match the sensitivity rules below |
 | `ref\|\|fallback` | `op://././hostname\|\|10.0.0.1` | Try reference first, fall back to literal |
 | Literal | `deploy` | Used as-is |
 
@@ -301,7 +301,7 @@ op://My %2F Vault/Item/field
 
 Both produce the same result. Quoting is easier to read in 1Password fields; URL encoding is what gets sent to the `op` CLI under the hood. Names with spaces work as-is — no quoting needed (e.g., `op://My Vault/My Item/password`).
 
-This is an ssh-concierge extension — the `op` CLI itself does not support quoted names and requires UUIDs for names containing unsupported characters.
+This is handled by op-core (the `op://` reference parser ssh-concierge uses) — the `op` CLI itself does not support quoted names and requires UUIDs for names containing unsupported characters.
 
 ### `||` fallback chains
 
@@ -317,7 +317,7 @@ This tries three sources: the item's own hostname, a backup reference, then a ha
 
 A field is **sensitive** if:
 - Any segment in the `||` chain uses the `ops://` prefix (explicit marker), OR
-- The field name matches: `password`, `passwd`, `pass`, `secret`, `token`, `otp`
+- The field name (case-insensitive) **contains** any of: `password`, `passwd`, `pass`, `secret`, `token`, `otp` — so `sudo_password`, `api_token`, and `OTP` all qualify
 
 Sensitive fields are **never** stored resolved on disk. They're kept as raw `op://` references in `hostdata.json` and resolved at SSH connection time by the wrapper.
 
@@ -477,10 +477,13 @@ The `key` field lets a non-key item (tagged `SSH Host`) reference an SSH key fro
 
 ### Formats
 
+The `key` field must be an `op://` reference (bare names like `MyKey` are rejected).
+
 | Format | Example | Behavior |
 |--------|---------|----------|
-| Item name | `MyKey` | Searches all vaults for an SSH Key item with this name |
-| Vault/Item | `Work/MyKey` | Searches only the specified vault |
+| `op://Vault/Item` | `op://Work/MyKey` | Fully explicit cross-vault item reference |
+| `op://./Item` | `op://./MyKey` | Same-vault item reference (resolves the dot to the host item's vault) |
+| `op://././Section/field` | `op://././SSH Config/key` | Self-reference: pulls the actual reference from another field on the same item, then resolves that |
 
 The referenced item must be an SSH Key item that is also managed by ssh-concierge (has an "SSH Config" section). The generated Host block gets `IdentityFile` pointing to the referenced key.
 
@@ -551,6 +554,8 @@ ssh-concierge --config                 # Show all config directives and effectiv
 ssh-concierge --config DIRECTIVE       # Show a single config value (e.g. hosts_file, ttl)
 ```
 
+`--generate` writes status messages and tqdm progress bars to stderr; pass `--quiet` to suppress them.
+
 The shell entry point delegates all flags to Python.
 
 ### Debug
@@ -559,7 +564,7 @@ The shell entry point delegates all flags to Python.
 
 - Each field's original value, resolved value (for references), and sensitivity status
 - Key references that failed to resolve are flagged with a warning
-- SSH agent status: whether the key is loaded in the SSH agent (`✓ available` or `⚠ NOT in SSH agent`)
+- SSH agent status: whether the key is loaded in the SSH agent (`✓ available in SSH agent` or `⚠ NOT in SSH agent (check 1Password agent vault config)`)
 - Config age and staleness status
 
 Useful for diagnosing why a host isn't connecting as expected — wrong vault name in a key reference, key not loaded in the agent, unresolved hostname, stale cached values, etc.
@@ -615,7 +620,7 @@ ssh-concierge --config hosts_file   # Single value
 ssh-concierge --config ttl          # "0"
 ```
 
-Available directives: `config_file`, `runtime_dir`, `askpass_dir`, `hosts_file`, `hostdata_file`, `keys_dir`, `ttl`, `op_timeout`, `key_mode`, `askpass_password`, `askpass_otp`.
+Available directives: `config_file`, `runtime_dir`, `askpass_dir`, `hosts_file`, `hostdata_file`, `keys_dir`, `env_file`, `lock_file`, `askpass_file`, `ttl`, `op_timeout`, `key_mode`, `askpass_password`, `askpass_otp`.
 
 The shell entry point uses `--config` internally to get paths and TTL from Python, keeping a single source of truth.
 
@@ -640,8 +645,8 @@ $XDG_RUNTIME_DIR/ssh-concierge/
 
 ## Cache behavior
 
-- **TTL**: 1 hour (default). The shell entry point checks the mtime of `hosts.conf`. Set `ttl = 0` in `config.toml` to disable auto-generation entirely — the shell entry point will skip regeneration as long as `hosts.conf` exists, and `--status`/`--debug` will show "manual" instead of "STALE".
-- **No background refresh**. The cache is populated on the first SSH connection after expiry.
+- **TTL**: 0 (default — manual mode). The shell entry point checks the mtime of `hosts.conf` against the configured TTL. With the default `ttl = 0`, auto-generation is disabled entirely — the shell entry point skips regeneration as long as `hosts.conf` exists, and `--status`/`--debug` show "manual" instead of "STALE". Set `ttl` to a positive value (e.g. `3600`) in `config.toml` for time-based auto-refresh.
+- **No background refresh**. When TTL is positive, the cache is populated on the first SSH connection after expiry.
 - **Manual refresh**: `ssh-concierge --generate` (after modifying items in 1Password). This always works regardless of TTL setting.
 - **Force re-resolution**: `ssh-concierge --generate --no-cache` (when the referenced *value* in 1Password changed but the reference itself didn't).
 - **Clear cache**: `ssh-concierge --flush` (next SSH connection triggers a cold path).

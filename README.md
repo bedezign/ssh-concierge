@@ -43,7 +43,7 @@ If you only need to connect to a few hosts from the 1Password app, Bookmarks wor
   Include ~/.ssh/static/config            ← existing configs still work
 ```
 
-On first connection (or after the 1-hour cache expires), the Python core queries 1Password for all managed items, generates a complete config, and dumps public keys. Every subsequent connection just checks the file's age and exits.
+The Python core queries 1Password for all managed items, generates a complete config, and dumps public keys. By default the config is regenerated only when you run `ssh-concierge --generate` explicitly — the TTL (cache time-to-live, in seconds) defaults to `0`, which means manual mode. Set `ttl` in the config file to a positive value (e.g. `3600`) for time-based auto-refresh on the first connection after expiry. Every subsequent connection just checks the file's age and exits.
 
 ## Quick start
 
@@ -61,6 +61,8 @@ On first connection (or after the 1-hour cache expires), the Python core queries
    ssh-concierge --generate
    ssh myserver   # → 203.0.113.42 as deploy, using the item's key
    ```
+
+`--generate` shows progress bars while it scans vaults and fetches items; pass `--quiet` to suppress them in scripts.
 
 ### What gets generated
 
