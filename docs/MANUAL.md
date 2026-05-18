@@ -544,6 +544,8 @@ The `sudo_password` field is resolved at SSH time (marked sensitive via `ops://`
 ```bash
 ssh-concierge --generate              # Force regenerate from 1Password
 ssh-concierge --generate --no-cache   # Regenerate, force re-resolution of all references
+ssh-concierge --generate --no-validate # Skip pre-flight validation pass
+ssh-concierge --generate --validate-refs # Deep-validate op:// references via op CLI (slower)
 ssh-concierge --flush                  # Delete runtime config entirely
 ssh-concierge --list                   # List all managed Host entries
 ssh-concierge --status                 # Show config path, age, host count
@@ -555,6 +557,8 @@ ssh-concierge --config DIRECTIVE       # Show a single config value (e.g. hosts_
 ```
 
 `--generate` writes status messages and tqdm progress bars to stderr; pass `--quiet` to suppress them.
+
+`--generate` runs a pre-flight validation pass on the resolved host configs before writing the runtime config. Validation warnings are printed to stderr but never block generation. The checks cover: hostname DNS resolution (with `ProxyJump` first-hop awareness), duplicate aliases across items, clipboard templates referencing undefined fields, cross-item `key` references against the loaded item set, `op://` reference syntax, self-reference (`op://././field`) completeness against the source item's field list, and port range sanity (1–65535). Pass `--no-validate` to skip the entire pass, or `--validate-refs` to additionally call `op read` against cross-item references for deep existence checks (slower; cached per `(vault, item)` for the run).
 
 The shell entry point delegates all flags to Python.
 

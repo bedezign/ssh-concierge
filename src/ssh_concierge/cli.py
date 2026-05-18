@@ -34,10 +34,12 @@ from ssh_concierge.models import HostConfig
 from ssh_concierge.password import ItemMeta
 from ssh_concierge.settings import Settings, load_settings
 from ssh_concierge.ssh_items import (
+    SSH_CONFIG_SECTION_PREFIX,
     SSH_HOST_TAG,
     complete_field_refs,
     parse_item_to_host_configs,
 )
+from ssh_concierge.validate import Issue, IssueLevel, validate_configs
 from ssh_concierge.wrap import lookup_hostdata
 
 
@@ -444,11 +446,49 @@ def _resolve_key_ref(
     return dataclasses.replace(host, public_key=key[0], fingerprint=key[1])
 
 
+def _build_item_index(items: list[Item]) -> dict[tuple, Item]:
+    """Build a lookup keyed by both ``(vault_id, item_id)`` and
+    ``(vault_name.lower(), title.lower())``."""
+    index: dict[tuple, Item] = {}
+    for item in items:
+        if item.vault_id and item.id:
+            index[(item.vault_id, item.id)] = item
+        if item.vault_name and item.title:
+            index[(item.vault_name.lower(), item.title.lower())] = item
+    return index
+
+
+def _ssh_config_field_names(item: Item) -> set[str]:
+    """Return the field labels of every ``SSH Config*`` section on the item."""
+    section_ids = {
+        s.id for s in item.sections if s.label.startswith(SSH_CONFIG_SECTION_PREFIX)
+    }
+    return {f.label for f in item.fields if f.section_id in section_ids}
+
+
+def _emit_issues(issues: list[Issue], *, quiet: bool) -> None:
+    """Print validation issues to stderr; suppressed when ``quiet`` is True."""
+    if quiet or not issues:
+        return
+    errors = sum(1 for i in issues if i.level == IssueLevel.ERROR)
+    warns = len(issues) - errors
+    summary = (
+        f"{errors} error(s), {warns} warning(s)" if errors else f"{warns} warning(s)"
+    )
+    print(f"Validation: {summary}", file=sys.stderr)
+    for issue in issues:
+        prefix = f"[{issue.alias}] " if issue.alias else ""
+        marker = "WARN" if issue.level == IssueLevel.WARN else "ERROR"
+        print(f"  {marker} {prefix}{issue.message}", file=sys.stderr)
+
+
 def cmd_generate(
     settings: Settings,
     *,
     quiet: bool = False,
     no_cache: bool = False,
+    no_validate: bool = False,
+    validate_refs: bool = False,
 ) -> None:
     """Query 1Password and regenerate the runtime config."""
     settings.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -517,9 +557,10 @@ def cmd_generate(
         hosts = []
         hostdata: dict[str, dict] = {}
 
-        # First pass: fetch all items, parse into HostConfigs, build key registry
+        # First pass: fetch all items, parse into HostConfigs, build key registry.
+        # Captures SSH Config field names per item for the self-ref completeness check.
         fetched: list[Item] = []
-        parsed: list[tuple[HostConfig, ItemMeta]] = []
+        parsed: list[tuple[HostConfig, ItemMeta, set[str]]] = []
         for summary in tqdm(
             summaries_by_id.values(),
             desc="Fetching items",
@@ -535,8 +576,9 @@ def cmd_generate(
                 vault_name=item.vault_name,
                 item_title=item.title,
             )
+            item_field_names = _ssh_config_field_names(item)
             for host in parse_item_to_host_configs(item):
-                parsed.append((host, meta))
+                parsed.append((host, meta, item_field_names))
 
         key_registry = _build_key_registry(fetched)
 
@@ -552,14 +594,16 @@ def cmd_generate(
         # Filter by local hostname
         local_hostname = socket.gethostname()
         parsed_total = len(parsed)
-        parsed = [(h, m) for h, m in parsed if h.matches_host(local_hostname)]
+        parsed = [(h, m, fn) for h, m, fn in parsed if h.matches_host(local_hostname)]
         if not quiet:
             tqdm.write(
                 f"  {len(parsed)} of {parsed_total} hosts match '{local_hostname}'"
             )
 
-        # Second pass: resolve key refs, expand, resolve fields, generate
-        for host, meta in tqdm(
+        # Second pass: resolve key refs, expand, resolve fields, generate.
+        # Also accumulates (host, meta, item_field_names) for pre-flight validation.
+        validation_pairs: list[tuple[HostConfig, ItemMeta, set[str]]] = []
+        for host, meta, item_field_names in tqdm(
             parsed,
             desc="Resolving fields",
             unit="host",
@@ -584,11 +628,22 @@ def cmd_generate(
                     no_cache=no_cache,
                 )
                 hosts.append(resolved_host)
+                validation_pairs.append((resolved_host, meta, item_field_names))
                 entry = _build_hostdata_entry(resolved_host)
                 if entry:
                     for alias in resolved_host.aliases:
                         if "*" not in alias and "?" not in alias:
                             hostdata[alias] = entry
+
+        if not no_validate:
+            item_index = _build_item_index(fetched)
+            issues = validate_configs(
+                host_meta_pairs=validation_pairs,
+                item_index=item_index,
+                op=op if validate_refs else None,
+                validate_refs=validate_refs,
+            )
+            _emit_issues(issues, quiet=quiet)
 
         generate_runtime_config(
             hosts,
@@ -846,6 +901,16 @@ def main() -> None:
         help="Force re-resolution of all field references",
     )
     parser.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="Skip pre-flight validation of host configs",
+    )
+    parser.add_argument(
+        "--validate-refs",
+        action="store_true",
+        help="Deep-validate op:// references via op CLI (slower)",
+    )
+    parser.add_argument(
         "-q", "--quiet", action="store_true", help="Suppress informational output"
     )
 
@@ -857,12 +922,27 @@ def main() -> None:
     if args.no_cache and not args.generate:
         parser.error("--no-cache can only be used with --generate")
 
+    if args.no_validate and not args.generate:
+        parser.error("--no-validate can only be used with --generate")
+
+    if args.validate_refs and not args.generate:
+        parser.error("--validate-refs can only be used with --generate")
+
+    if args.no_validate and args.validate_refs:
+        parser.error("--no-validate and --validate-refs are mutually exclusive")
+
     settings = load_settings()
 
     if args.config is not None:
         cmd_config(args.config or None, settings)
     elif args.generate:
-        cmd_generate(settings, quiet=args.quiet, no_cache=args.no_cache)
+        cmd_generate(
+            settings,
+            quiet=args.quiet,
+            no_cache=args.no_cache,
+            no_validate=args.no_validate,
+            validate_refs=args.validate_refs,
+        )
     elif args.flush:
         cmd_flush(settings, quiet=args.quiet)
     elif args.list:

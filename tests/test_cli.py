@@ -21,10 +21,13 @@ from op_core import (
 from ssh_concierge.cli import (
     AgentQueryError,
     _agent_key_status,
+    _build_item_index,
     _build_key_registry,
+    _emit_issues,
     _get_agent_fingerprints,
     _load_cached_hostdata,
     _resolve_key_ref,
+    _ssh_config_field_names,
     _warn_missing_agent_keys,
     _warn_noexec_askpass,
     _write_env_sh,
@@ -39,6 +42,7 @@ from ssh_concierge.cli import (
 from ssh_concierge.models import HostConfig
 from ssh_concierge.password import ItemMeta
 from ssh_concierge.settings import Settings
+from ssh_concierge.validate import Issue, IssueLevel
 from tests.conftest import fv
 
 
@@ -87,7 +91,7 @@ def _configure_mock_op(mock_op_cls, item_ids: list[str]) -> MagicMock:
     items_by_id = {i: _fake_item(i) for i in item_ids}
     mock_op.list_vaults.return_value = [VaultSummary(id="v1", name="Vault")]
     mock_op.list_items.side_effect = [summaries, []]
-    mock_op.get_item.side_effect = lambda summary, **kwargs: items_by_id[summary.id]
+    mock_op.get_item.side_effect = lambda summary, **_: items_by_id[summary.id]
     mock_op.resolve.return_value = None
     return mock_op
 
@@ -579,6 +583,40 @@ class TestMain:
 
     def test_no_cache_without_generate_fails(self):
         with patch("sys.argv", ["ssh-concierge", "--list", "--no-cache"]):
+            with pytest.raises(SystemExit):
+                main()
+
+    @patch("ssh_concierge.cli.cmd_generate")
+    def test_no_validate_flag(self, mock_gen):
+        with patch("sys.argv", ["ssh-concierge", "--generate", "--no-validate"]):
+            main()
+        mock_gen.assert_called_once()
+        kwargs = mock_gen.call_args[1]
+        assert kwargs["no_validate"] is True
+
+    @patch("ssh_concierge.cli.cmd_generate")
+    def test_validate_refs_flag(self, mock_gen):
+        with patch("sys.argv", ["ssh-concierge", "--generate", "--validate-refs"]):
+            main()
+        mock_gen.assert_called_once()
+        kwargs = mock_gen.call_args[1]
+        assert kwargs["validate_refs"] is True
+
+    def test_no_validate_without_generate_fails(self):
+        with patch("sys.argv", ["ssh-concierge", "--list", "--no-validate"]):
+            with pytest.raises(SystemExit):
+                main()
+
+    def test_validate_refs_without_generate_fails(self):
+        with patch("sys.argv", ["ssh-concierge", "--list", "--validate-refs"]):
+            with pytest.raises(SystemExit):
+                main()
+
+    def test_no_validate_and_validate_refs_mutually_exclusive(self):
+        with patch(
+            "sys.argv",
+            ["ssh-concierge", "--generate", "--no-validate", "--validate-refs"],
+        ):
             with pytest.raises(SystemExit):
                 main()
 
@@ -1426,3 +1464,163 @@ class TestAgentKeyStatus:
         ):
             result = _agent_key_status("    IdentityFile /run/keys/SHA256:abc.pub")
         assert "⚠ cannot check agent" in result
+
+
+class TestEmitIssues:
+    def test_quiet_suppresses_output(self, capsys):
+        issues = [Issue(level=IssueLevel.WARN, alias="prod", message="bad")]
+        _emit_issues(issues, quiet=True)
+        err = capsys.readouterr().err
+        assert "Validation:" not in err
+
+    def test_empty_issues_no_output(self, capsys):
+        _emit_issues([], quiet=False)
+        err = capsys.readouterr().err
+        assert "Validation:" not in err
+
+    def test_warn_format(self, capsys):
+        issues = [Issue(level=IssueLevel.WARN, alias="prod", message="bad")]
+        _emit_issues(issues, quiet=False)
+        err = capsys.readouterr().err
+        assert "Validation: 1 warning(s)" in err
+        assert "WARN [prod] bad" in err
+
+    def test_error_format(self, capsys):
+        issues = [Issue(level=IssueLevel.ERROR, alias="prod", message="critical")]
+        _emit_issues(issues, quiet=False)
+        err = capsys.readouterr().err
+        assert "ERROR [prod] critical" in err
+        assert "1 error(s)" in err
+
+
+class TestBuildItemIndex:
+    def _make_item(
+        self,
+        vault_id: str | None,
+        item_id: str | None,
+        vault_name: str = "V",
+        title: str = "T",
+    ) -> Item:
+        return Item(
+            id=item_id,  # pyright: ignore[reportArgumentType]
+            vault_id=vault_id,  # pyright: ignore[reportArgumentType]
+            vault_name=vault_name,
+            title=title,
+            category="SSH_KEY",
+            tags=(),
+            sections=(),
+            fields=(),
+        )
+
+    def test_skips_item_with_none_vault_id(self):
+        item = self._make_item(vault_id=None, item_id="i1", vault_name="V", title="T")
+        index = _build_item_index([item])
+        assert (None, "i1") not in index
+        assert ("v", "t") in index
+
+    def test_skips_item_with_none_id(self):
+        item = self._make_item(vault_id="v1", item_id=None, vault_name="V", title="T")
+        index = _build_item_index([item])
+        assert ("v1", None) not in index
+        assert ("v", "t") in index
+
+    def test_duplicate_key_last_wins(self):
+        item1 = self._make_item(
+            vault_id="v1", item_id="i1", vault_name="V", title="First"
+        )
+        item2 = self._make_item(
+            vault_id="v1", item_id="i1", vault_name="V", title="Second"
+        )
+        index = _build_item_index([item1, item2])
+        stored = index.get(("v1", "i1"))
+        assert stored is not None
+        assert stored.title == "Second"
+
+
+class TestSshConfigFieldNames:
+    def _make_item(
+        self,
+        sections: tuple,
+        fields: tuple,
+    ) -> Item:
+        return Item(
+            id="i1",
+            vault_id="v1",
+            vault_name="V",
+            title="T",
+            category="SSH_KEY",
+            tags=(),
+            sections=sections,
+            fields=fields,
+        )
+
+    def test_no_ssh_config_section(self):
+        item = self._make_item(
+            sections=(ItemSection(id="s1", label="Login"),),
+            fields=(
+                ItemField(
+                    id="f1",
+                    label="username",
+                    value="me",
+                    type="STRING",
+                    section_id="s1",
+                ),
+            ),
+        )
+        assert _ssh_config_field_names(item) == set()
+
+    def test_label_with_trailing_space(self):
+        """Trailing-space label 'SSH Config ' is still matched by startswith."""
+        item = self._make_item(
+            sections=(ItemSection(id="s1", label="SSH Config "),),
+            fields=(
+                ItemField(
+                    id="f1",
+                    label="aliases",
+                    value="prod",
+                    type="STRING",
+                    section_id="s1",
+                ),
+            ),
+        )
+        assert "aliases" in _ssh_config_field_names(item)
+
+    def test_multiple_ssh_config_sections(self):
+        item = self._make_item(
+            sections=(
+                ItemSection(id="s1", label="SSH Config"),
+                ItemSection(id="s2", label="SSH Config 2"),
+            ),
+            fields=(
+                ItemField(
+                    id="f1", label="fieldone", value="a", type="STRING", section_id="s1"
+                ),
+                ItemField(
+                    id="f2", label="fieldtwo", value="b", type="STRING", section_id="s2"
+                ),
+            ),
+        )
+        result = _ssh_config_field_names(item)
+        assert "fieldone" in result
+        assert "fieldtwo" in result
+
+
+class TestValidateConfigsInvocation:
+    @patch("ssh_concierge.cli.validate_configs")
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_validate_configs_called_by_default(
+        self, mock_op_cls, mock_validate, runtime_dir
+    ):
+        _configure_mock_op(mock_op_cls, [])
+        mock_validate.return_value = []
+        cmd_generate(_make_settings(runtime_dir))
+        mock_validate.assert_called_once()
+
+    @patch("ssh_concierge.cli.validate_configs")
+    @patch("ssh_concierge.cli.OnePassword")
+    def test_validate_configs_skipped_when_no_validate(
+        self, mock_op_cls, mock_validate, runtime_dir
+    ):
+        _configure_mock_op(mock_op_cls, [])
+        cmd_generate(_make_settings(runtime_dir), no_validate=True)
+        mock_validate.assert_not_called()
